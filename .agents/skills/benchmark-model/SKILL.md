@@ -107,7 +107,8 @@ table.
 `variants` (id, label, required roles; single-variant models use `default`
 and unsuffixed table ids); `sampling`; `speculative` (mode, label, Gufo
 arguments with `{role}` placeholders, and which reference mode it is compared
-against); `tables` keyed by table id with that table's workload, and
+against; omit it for models without a speculative mode, which then may only
+declare AR tables); `tables` keyed by table id with that table's workload, and
 `gufo.serve` / `reference.server` + `args` for the two servers. Readiness is
 `GET /ready` on Gufo and `GET /health` on llama-server.
 
@@ -158,12 +159,14 @@ and the table says so.
 4. Before publishing a speed refresh of unchanged code, run the model's fast
    correctness suite when it has one (Qwen3.8 27B: `nix develop -c python3
    tools/qwen27b/check.py fast`; DeepSeek: `nix develop -c tools/ds4/check.py fast`;
-   Flash-Next has no dedicated fast model suite). Contract tests and concurrency
+   Flash-Next has no dedicated fast model suite; Flint: `ctest -L flint` with
+   `GUFO_FLINT_MODEL` plus `flint_session_test`). Contract tests and concurrency
    hashes do not replace independent model qualification; the full
    `QUALITY.md` suites are for changed kernels or models. Greedy speculative output must match AR token
-   IDs in the model checks. HTTP runs retain completion hashes: concurrency
-   compares them against the Gufo AR C1 reference, while matching single-user
-   AR/speculative depth rows allow the same text-consistency check. These hashes
+   IDs in the model checks. HTTP runs retain completion hashes (content, or
+   reasoning, NUL and content when the server streams `reasoning_content`):
+   concurrency compares them against the Gufo AR C1 reference, while matching
+   single-user AR/speculative depth rows allow the same text-consistency check. These hashes
    do not prove original-model accuracy. A mismatch or device fault is not a result.
    Qualify the reference's speculative path against its own AR on the matched
    pp2048 control before a full sweep, including prepared C1 reuse. If that
@@ -242,7 +245,7 @@ around them (dates, acceptance notes, caveats) is hand-maintained.
 
 ## LLM (GGUF text and vision models)
 
-Models: `deepseek-v4-flash`, `qwen3.8-27b`, `qwen3.8-flash-next`.
+Models: `deepseek-v4-flash`, `flint`, `qwen3.8-27b`, `qwen3.8-flash-next`.
 Qwen reference: **llama.cpp** `llama-server`, same GGUF, ROCm build,
 `-ngl 999 -fa on --cache-reuse 0 --cache-ram 0 --jinja --reasoning off`,
 `-np C` and total `-c` covering every session's context. `--cache-ram 0`
@@ -256,7 +259,15 @@ Gufo: `gufo serve llm --think off --max-pending-per-client 8`, greedy, seed
 1; the driver sets `--sessions 1` for single-user tables and `--sessions C`
 (llama.cpp `-np C -c 4096·C`) for concurrency tables, and attaches `--mmproj`
 only for the image-encoder table. The sweep parameters are identical across
-the three models so the documents stay comparable.
+the LLM models so the documents stay comparable.
+
+Flint reference: the same llama.cpp `llama-server` arguments. The pinned
+`.#llama-cpp-reference` (b11069) predates Flint, and no Nix pin exists yet, so
+Flint's reference is an ad-hoc ROCm build of upstream `970b51ce` (Flint support
+from `a37cc461`, ggml-org/llama.cpp#30928), passed with `--reference-binary`.
+Record its revision and build flags in `model-identities.json`. Flint has no
+speculative mode, so its `bench.json` has no `speculative` section and only
+AR tables.
 
 DeepSeek reference: **antirez/ds4**, pinned by `.#ds4-reference`, same target
 and DSpark GGUF. The server uses `--rocm --ctx <per-session-capacity>`;

@@ -71,7 +71,8 @@ The supported modalities are LLM, image, video, and audio (TTS, ASR).
 - `think` (`"on"` / `"off"` / `"auto"`) — whether the model produces its
   visible thinking before answering. In practice: off for quick chats, on
   for hard problems. Auto uses the model default: enabled for Qwen3.8 and
-  DeepSeek V4 Flash.
+  DeepSeek V4 Flash. Flint has no switch and ignores `think` and
+  `reasoningEffort`: the model decides each turn; cap it with a reasoning budget.
 - `reasoningEffort` (`"auto"`, `"minimal"`, `"low"`, `"medium"`, `"high"`,
   `"xhigh"`, `"max"`) — model instructions controlling reasoning depth,
   not a token limit. Auto selects Qwen `xhigh` or DeepSeek `high`; more effort
@@ -105,7 +106,7 @@ seed. Speed depends on acceptance and verification cost.
 
 - `speculative` — `dflash2` for Qwen3.8-27B, `dspark` for DeepSeek V4 Flash,
   `mtp` for models with a supported MTP head, or `off`. HTTP serving
-  supports `dflash2`, `dspark`, and Flash-Next `mtp`.
+  supports `dflash2`, `dspark`, and Flash-Next `mtp`. Flint accepts only `off`.
 - `dflashModel` — path to the DFlash2 companion draft.
 - `dsparkModel` — path to the DSpark support GGUF.
 - `mtpModel` — path to the MTP draft model.

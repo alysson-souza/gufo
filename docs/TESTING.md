@@ -77,6 +77,16 @@ Qwen27B also checks exact restoration after cancellation between layers.
 Use the [HTTP continuation check](SERVER.md#hip-execution)
 for cancellation, thinking controls and disk restart.
 
+Flint's CTest entries carry the `flint` label. `flint.config`,
+`flint.chat_template` and `flint.tool_calls` run in the hosted gate;
+`flint.tokenizer`, `flint.weights` and `flint.artifact_ops` need
+`GUFO_FLINT_MODEL` set to the GGUF and skip (77) without it. The HIP operator
+checks (`flint.*_ops`, including `batch_invariance_ops` and
+`split_invariance_ops`) need `gpu-test`. Build `flint_session_test` explicitly
+for engine, snapshot and serving replay with the model, and `flint_gpu_probe`
+with `flint_reference_probe` and `tools/flint/` for matched-token comparisons
+against the CPU reference and llama.cpp; see [Flint quality](models/flint/QUALITY.md#reproduce).
+
 ## Text API functional tests
 
 Use [tests/functional/](../tests/functional/README.md) for live API regression
@@ -106,6 +116,7 @@ Model-owned procedures and outstanding qualification gaps live with the model:
 - [DeepSeek V4 Flash](models/deepseek-v4-flash/QUALITY.md)
 - [Qwen3.8 27B](models/qwen3.8-27b/QUALITY.md)
 - [Qwen3.8 Flash-Next](models/qwen3.8-flash-next/QUALITY.md)
+- [Recursive Flint](models/flint/QUALITY.md)
 - [MiniMax H3](models/minimax-h3/QUALITY.md)
 - [Qwen3-TTS](models/qwen3-tts/QUALITY.md)
 - [Qwen3-ASR](models/qwen3-asr/QUALITY.md)

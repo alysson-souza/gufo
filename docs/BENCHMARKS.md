@@ -6,6 +6,7 @@ results and qualification gaps live in:
 - [DeepSeek V4 Flash](models/deepseek-v4-flash/BENCHMARKS.md)
 - [Qwen3.8 27B](models/qwen3.8-27b/BENCHMARKS.md)
 - [Qwen3.8 Flash-Next](models/qwen3.8-flash-next/BENCHMARKS.md)
+- [Recursive Flint](models/flint/BENCHMARKS.md)
 - [Qwen3-TTS](models/qwen3-tts/BENCHMARKS.md)
 - [Qwen3-ASR](models/qwen3-asr/BENCHMARKS.md)
 - [MiniMax H3](models/minimax-h3/BENCHMARKS.md)
@@ -14,7 +15,7 @@ results and qualification gaps live in:
 
 `tools/bench/model-bench.py` measures the tables of a model's `BENCHMARKS.md`
 over HTTP for Gufo and for the reference project of its category (llama.cpp
-for Qwen; antirez/ds4 for DeepSeek), writes per-table artifacts, and renders the tables
+for Qwen and Flint; antirez/ds4 for DeepSeek), writes per-table artifacts, and renders the tables
 and SVG charts between the `<!-- bench:<id> -->` markers. Workloads and table
 layouts are declared in `docs/models/<model>/artifacts/bench.json`; the
 `benchmark-model` skill in `.agents/skills` describes the procedure.
@@ -27,6 +28,7 @@ the normal development shell and hosted checks:
 | Qwen AR / DFlash2 | `.#llama-cpp-reference` | `llama-server` |
 | Flash-Next MTP | `.#llama-cpp-mtp-reference` | `llama-server-mtp` |
 | DeepSeek AR / DSpark | `.#ds4-reference` | `ds4-server`, `ds4-bench` |
+| Flint AR | none; ad-hoc ROCm build of llama.cpp `970b51ce` | `llama-server` |
 
 For example, enter the development shell and add only the needed baseline:
 

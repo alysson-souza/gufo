@@ -1,0 +1,219 @@
+{
+  "artifactType": "model-bench-table",
+  "fingerprint": {
+    "canonical": {
+      "cppStandard": "C++20",
+      "cpuArchitecture": "x86_64",
+      "cpuLogicalCores": 32,
+      "cpuModel": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+      "cpuPhysicalCores": 16,
+      "cxxCompiler": "GCC 15.3.0",
+      "gpuArchitecture": "gfx1151",
+      "gpuComputeUnits": 20,
+      "gpuDriver": "amdgpu",
+      "gpuName": "AMD Radeon 8060S Graphics",
+      "gpuPciId": "1002:1586",
+      "kernelRelease": "7.3.0-2-cachyos",
+      "memoryTotalBytes": 133618798592,
+      "memoryType": "LPDDR5X (Unified)",
+      "rocmVersion": "7.2.3",
+      "schemaVersion": "1.0.0"
+    },
+    "fingerprintId": "80811fcc1505ada0aaa6fcef0938539134fc181fe9543aa1fcc98689a091bc3c",
+    "schemaVersion": "1.0.0"
+  },
+  "measuredOn": "2026-10-23",
+  "mode": null,
+  "model": {
+    "id": "Recursive-Flint",
+    "variant": null
+  },
+  "notes": [
+    "pp2048/tg128; depth is a cached conversation prefix of synthetic text (8-token reply); measured turn task is recorded per row; tolerance max(32, 0.500%) on cache_n and prompt_n; actual counts per sample in rows",
+    "synthetic text: 1.121 tokens/word, template overhead 2 tokens"
+  ],
+  "referenceName": "llama.cpp",
+  "rows": {
+    "0": {
+      "command": "gufo serve --port 56523 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
+      "counts": [
+        {
+          "cache_n": 0,
+          "completion_sha256": "dede3fc3c07788e79e8c736ddb36952a4cf084d9a567462ca5d3dd06e6b7d16e",
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "predicted_n": 128,
+          "prompt_n": 2045
+        }
+      ],
+      "pp": 2372.91,
+      "pp_sd": null,
+      "samples": 1,
+      "tg": 67.65,
+      "tg_sd": null,
+      "workload": "prose"
+    },
+    "12288": {
+      "command": "gufo serve --port 56523 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
+      "counts": [
+        {
+          "cache_n": 12242,
+          "completion_sha256": "f589255fb2cf6a60ad9d70da818668f632dc533da61cfef947a40eff9635e737",
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "predicted_n": 128,
+          "prompt_n": 2050
+        }
+      ],
+      "pp": 1621.75,
+      "pp_sd": null,
+      "samples": 1,
+      "tg": 59.85,
+      "tg_sd": null,
+      "workload": "prose"
+    },
+    "131072": {
+      "command": "gufo serve --port 56523 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
+      "counts": [
+        {
+          "cache_n": 130904,
+          "completion_sha256": "2bbe46211a9334cd360365825c371fda68aa8c01631abc7556177426cfa9d2e3",
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "predicted_n": 128,
+          "prompt_n": 2053
+        }
+      ],
+      "pp": 460.8,
+      "pp_sd": null,
+      "samples": 1,
+      "tg": 30.99,
+      "tg_sd": null,
+      "workload": "prose"
+    },
+    "16384": {
+      "command": "gufo serve --port 56523 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
+      "counts": [
+        {
+          "cache_n": 16345,
+          "completion_sha256": "dc91f78ec9cd6c12c861848930010d70b5c221fcfb7178446932eafce0f4bfa3",
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "predicted_n": 128,
+          "prompt_n": 2039
+        }
+      ],
+      "pp": 1543.43,
+      "pp_sd": null,
+      "samples": 1,
+      "tg": 58.05,
+      "tg_sd": null,
+      "workload": "prose"
+    },
+    "32768": {
+      "command": "gufo serve --port 56523 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
+      "counts": [
+        {
+          "cache_n": 32747,
+          "completion_sha256": "ab684c92c1069b4a0e60c4d05a28bc57a1fc893145523032cb9528e25e276390",
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "predicted_n": 128,
+          "prompt_n": 2033
+        }
+      ],
+      "pp": 1173.63,
+      "pp_sd": null,
+      "samples": 1,
+      "tg": 51.31,
+      "tg_sd": null,
+      "workload": "prose"
+    },
+    "4096": {
+      "command": "gufo serve --port 56523 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
+      "counts": [
+        {
+          "cache_n": 4094,
+          "completion_sha256": "c22f9823f7acb5e3f6eb470e3a5b5ca46551976e6e34e47c4d3daea12cc757f9",
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "predicted_n": 128,
+          "prompt_n": 2040
+        }
+      ],
+      "pp": 2045.1,
+      "pp_sd": null,
+      "samples": 1,
+      "tg": 63.95,
+      "tg_sd": null,
+      "workload": "prose"
+    },
+    "65536": {
+      "command": "gufo serve --port 56523 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
+      "counts": [
+        {
+          "cache_n": 65459,
+          "completion_sha256": "3071feaebe146c1f412b336282dec6a2db7c3e4547c5f5929ba45b507e6eb65c",
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "predicted_n": 128,
+          "prompt_n": 2054
+        }
+      ],
+      "pp": 765.26,
+      "pp_sd": null,
+      "samples": 1,
+      "tg": 41.9,
+      "tg_sd": null,
+      "workload": "prose"
+    },
+    "8192": {
+      "command": "gufo serve --port 56523 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
+      "counts": [
+        {
+          "cache_n": 8176,
+          "completion_sha256": "5c5cd49e7a7ecf778dc8f9d1ea3690ef642d6514f2d5a59e82b3757f598b1e5f",
+          "draft_n": 0,
+          "draft_n_accepted": 0,
+          "predicted_n": 128,
+          "prompt_n": 2032
+        }
+      ],
+      "pp": 1830.03,
+      "pp_sd": null,
+      "samples": 1,
+      "tg": 62.24,
+      "tg_sd": null,
+      "workload": "prose"
+    }
+  },
+  "schemaVersion": 1,
+  "server": {
+    "command": [
+      "gufo",
+      "serve",
+      "--port",
+      "56523",
+      "--sessions",
+      "1",
+      "llm",
+      "--model",
+      "flint-UD-Q4_K_XL.gguf",
+      "--context",
+      "133760",
+      "--served-model-name",
+      "bench",
+      "--think",
+      "off",
+      "--max-pending-per-client",
+      "8"
+    ]
+  },
+  "source": {
+    "buildMode": "nix-release",
+    "dirty": true,
+    "revision": "1167a94475ad888534a99c9fb72401636cd9f7e7"
+  },
+  "table": "single-ar",
+  "target": "gufo"
+}

@@ -1,0 +1,467 @@
+{
+  "schema": "gufo-flint-logit-comparison/1",
+  "date": "2026-10-22",
+  "scope": "Matched-token full-vocabulary next-token distributions; KL(teacher||candidate) per scored position. Summaries only; logits stay outside Git.",
+  "model": {
+    "repository": "unsloth/flint-GGUF",
+    "revision": "20468edfc38ab43d6914cc88b08cbecb05d0fc62",
+    "file": "flint-UD-Q4_K_XL.gguf",
+    "sha256": "63c2ecc461ca545134b670c660e76fa20f47240f8d39b6510bfd21c4dd6e072f"
+  },
+  "implementations": {
+    "cpu-fp32-reference": "gufo_flint_reference ReferenceModel: core::quant weight decode, FP32 activations, double-accumulated matmuls, FP32 K/V, sigmoid router in FP32 (src/models/flint/reference.cpp)",
+    "gufo-prefill": "flint_gpu_probe --mode prefill: production HIP prefill (MMQ matrix tier, Q8_1 activations, FP16 K/V, WMMA FP16 attention), chunk 2048, logits for every position",
+    "gufo-decode": "flint_gpu_probe --mode decode: production HIP decode graph, one token per step (MMVQ, Q8_1 activations, FP16 K/V)",
+    "llama.cpp-hip": "llama.cpp 970b51ce7c9ba5fff0726c5e9994f1c2f0e4eedc, ROCm gfx1151, tools/flint/llama_logits.cpp, F16 KV, flash attention auto, n_batch=n_ubatch=512",
+    "llama.cpp-cpu": "same llama.cpp build with --ngl 0 (pure CPU backend, op offload off)"
+  },
+  "prompts": {
+    "chat": {
+      "tokens": 50,
+      "description": "system + three turns + generation prompt, HF tokenizer + official jinja template (tools/flint/prompts.py)",
+      "idsFileSha256": "c10196743fb6369952d696efe17cb5bdb9880b1aaa900f35f0fc416557140c27"
+    },
+    "code": {
+      "tokens": 204,
+      "description": "raw Python source",
+      "idsFileSha256": "8669a37d005e84dfa69e31f91f2dab63a5bed91d120f4ff9aabf6610623580b2"
+    },
+    "long": {
+      "tokens": 2209,
+      "description": "Apache-2.0 LICENSE text in one user turn; crosses the 513-token window four times",
+      "idsFileSha256": "00faff3d21511f379396d8e5ddd543bd0a6126fc7bce062e58aafa213170359f"
+    }
+  },
+  "notes": [
+    "Chat position 0 (<|system|> as first token) is ill-conditioned in every implementation: llama.cpp HIP alone differs by KL 3.26 between batch-1 and batch-50 evaluation; from_position_1 excludes it.",
+    "Large single-position spikes are routing near-ties for the sixth expert slot (for example layer 15, experts 59 vs 235 at long position 116); each implementation has its own outliers."
+  ],
+  "comparisons": {
+    "chat": {
+      "gufo-decode vs cpu-fp32-reference": {
+        "from_position_0": {
+          "positions": 50,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.040154,
+          "kl_p99": 0.853179,
+          "kl_max": 1.416139,
+          "kl_max_position": 0,
+          "top1_agreement": 0.94,
+          "top5_overlap": 0.956,
+          "max_abs_dlogp": 13.432536,
+          "nll_teacher_mean": 6.839174,
+          "nll_candidate_mean": 6.968804
+        },
+        "from_position_1": {
+          "positions": 49,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.012073,
+          "kl_p99": 0.168009,
+          "kl_max": 0.267241,
+          "kl_max_position": 48,
+          "top1_agreement": 0.959184,
+          "top5_overlap": 0.959184,
+          "max_abs_dlogp": 13.432536,
+          "nll_teacher_mean": 6.674136,
+          "nll_candidate_mean": 6.769074
+        }
+      },
+      "llama.cpp-hip vs cpu-fp32-reference": {
+        "from_position_0": {
+          "positions": 50,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.064542,
+          "kl_p99": 1.392899,
+          "kl_max": 2.629166,
+          "kl_max_position": 0,
+          "top1_agreement": 0.96,
+          "top5_overlap": 0.964,
+          "max_abs_dlogp": 13.345501,
+          "nll_teacher_mean": 6.839174,
+          "nll_candidate_mean": 6.872568
+        },
+        "from_position_1": {
+          "positions": 49,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.012203,
+          "kl_p99": 0.083079,
+          "kl_max": 0.106173,
+          "kl_max_position": 48,
+          "top1_agreement": 0.979592,
+          "top5_overlap": 0.97551,
+          "max_abs_dlogp": 12.105656,
+          "nll_teacher_mean": 6.674136,
+          "nll_candidate_mean": 6.738381
+        }
+      },
+      "llama.cpp-cpu vs cpu-fp32-reference": {
+        "from_position_0": {
+          "positions": 50,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.045209,
+          "kl_p99": 0.90756,
+          "kl_max": 1.689614,
+          "kl_max_position": 0,
+          "top1_agreement": 0.96,
+          "top5_overlap": 0.948,
+          "max_abs_dlogp": 12.571869,
+          "nll_teacher_mean": 6.839174,
+          "nll_candidate_mean": 6.778127
+        },
+        "from_position_1": {
+          "positions": 49,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.01165,
+          "kl_p99": 0.092307,
+          "kl_max": 0.093586,
+          "kl_max_position": 14,
+          "top1_agreement": 0.979592,
+          "top5_overlap": 0.95102,
+          "max_abs_dlogp": 11.379519,
+          "nll_teacher_mean": 6.674136,
+          "nll_candidate_mean": 6.67029
+        }
+      },
+      "gufo-prefill vs gufo-decode": {
+        "from_position_0": {
+          "positions": 50,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.013319,
+          "kl_p99": 0.155772,
+          "kl_max": 0.237149,
+          "kl_max_position": 48,
+          "top1_agreement": 0.96,
+          "top5_overlap": 0.968,
+          "max_abs_dlogp": 17.370487,
+          "nll_teacher_mean": 6.968804,
+          "nll_candidate_mean": 6.962868
+        },
+        "from_position_1": {
+          "positions": 49,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.013591,
+          "kl_p99": 0.157433,
+          "kl_max": 0.237149,
+          "kl_max_position": 48,
+          "top1_agreement": 0.959184,
+          "top5_overlap": 0.967347,
+          "max_abs_dlogp": 17.370487,
+          "nll_teacher_mean": 6.769074,
+          "nll_candidate_mean": 6.763015
+        }
+      },
+      "gufo-prefill vs llama.cpp-hip": {
+        "from_position_0": {
+          "positions": 50,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.084104,
+          "kl_p99": 1.889608,
+          "kl_max": 3.495319,
+          "kl_max_position": 0,
+          "top1_agreement": 0.96,
+          "top5_overlap": 0.956,
+          "max_abs_dlogp": 15.481177,
+          "nll_teacher_mean": 6.872568,
+          "nll_candidate_mean": 6.962868
+        },
+        "from_position_1": {
+          "positions": 49,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.014488,
+          "kl_p99": 0.145834,
+          "kl_max": 0.218357,
+          "kl_max_position": 48,
+          "top1_agreement": 0.979592,
+          "top5_overlap": 0.967347,
+          "max_abs_dlogp": 15.481177,
+          "nll_teacher_mean": 6.738381,
+          "nll_candidate_mean": 6.763015
+        }
+      },
+      "gufo-prefill vs cpu-fp32-reference": {
+        "from_position_0": {
+          "positions": 50,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.043564,
+          "kl_p99": 0.841816,
+          "kl_max": 1.416139,
+          "kl_max_position": 0,
+          "top1_agreement": 0.94,
+          "top5_overlap": 0.952,
+          "max_abs_dlogp": 13.671089,
+          "nll_teacher_mean": 6.839174,
+          "nll_candidate_mean": 6.962868
+        },
+        "from_position_1": {
+          "positions": 49,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.015552,
+          "kl_p99": 0.160981,
+          "kl_max": 0.244051,
+          "kl_max_position": 48,
+          "top1_agreement": 0.959184,
+          "top5_overlap": 0.955102,
+          "max_abs_dlogp": 13.671089,
+          "nll_teacher_mean": 6.674136,
+          "nll_candidate_mean": 6.763015
+        }
+      }
+    },
+    "code": {
+      "gufo-decode vs cpu-fp32-reference": {
+        "from_position_0": {
+          "positions": 204,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.002602,
+          "kl_p99": 0.051081,
+          "kl_max": 0.110968,
+          "kl_max_position": 186,
+          "top1_agreement": 0.995098,
+          "top5_overlap": 0.940196,
+          "max_abs_dlogp": 23.832288,
+          "nll_teacher_mean": 0.564367,
+          "nll_candidate_mean": 0.556175
+        }
+      },
+      "llama.cpp-hip vs cpu-fp32-reference": {
+        "from_position_0": {
+          "positions": 204,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.002621,
+          "kl_p99": 0.047462,
+          "kl_max": 0.085224,
+          "kl_max_position": 186,
+          "top1_agreement": 0.985294,
+          "top5_overlap": 0.954902,
+          "max_abs_dlogp": 9.58396,
+          "nll_teacher_mean": 0.564367,
+          "nll_candidate_mean": 0.573106
+        }
+      },
+      "llama.cpp-cpu vs cpu-fp32-reference": {
+        "from_position_0": {
+          "positions": 204,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.004814,
+          "kl_p99": 0.035597,
+          "kl_max": 0.583357,
+          "kl_max_position": 186,
+          "top1_agreement": 0.990196,
+          "top5_overlap": 0.947059,
+          "max_abs_dlogp": 10.400065,
+          "nll_teacher_mean": 0.564367,
+          "nll_candidate_mean": 0.555255
+        }
+      },
+      "gufo-prefill vs gufo-decode": {
+        "from_position_0": {
+          "positions": 204,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.003445,
+          "kl_p99": 0.05357,
+          "kl_max": 0.168947,
+          "kl_max_position": 141,
+          "top1_agreement": 0.990196,
+          "top5_overlap": 0.938235,
+          "max_abs_dlogp": 24.159711,
+          "nll_teacher_mean": 0.556175,
+          "nll_candidate_mean": 0.56424
+        }
+      },
+      "gufo-prefill vs llama.cpp-hip": {
+        "from_position_0": {
+          "positions": 204,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.003916,
+          "kl_p99": 0.075788,
+          "kl_max": 0.174566,
+          "kl_max_position": 203,
+          "top1_agreement": 0.980392,
+          "top5_overlap": 0.951961,
+          "max_abs_dlogp": 23.852964,
+          "nll_teacher_mean": 0.573106,
+          "nll_candidate_mean": 0.56424
+        }
+      },
+      "gufo-prefill vs cpu-fp32-reference": {
+        "from_position_0": {
+          "positions": 204,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.002543,
+          "kl_p99": 0.035568,
+          "kl_max": 0.174895,
+          "kl_max_position": 203,
+          "top1_agreement": 0.995098,
+          "top5_overlap": 0.952941,
+          "max_abs_dlogp": 23.42361,
+          "nll_teacher_mean": 0.564367,
+          "nll_candidate_mean": 0.56424
+        }
+      }
+    },
+    "long": {
+      "gufo-decode vs cpu-fp32-reference": {
+        "from_position_0": {
+          "positions": 2209,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.144702,
+          "kl_p99": 3.61551,
+          "kl_max": 26.375094,
+          "kl_max_position": 1120,
+          "top1_agreement": 0.951562,
+          "top5_overlap": 0.890991,
+          "max_abs_dlogp": 56.167866,
+          "nll_teacher_mean": 0.702693,
+          "nll_candidate_mean": 0.685152
+        }
+      },
+      "llama.cpp-hip vs cpu-fp32-reference": {
+        "from_position_0": {
+          "positions": 2209,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.150443,
+          "kl_p99": 2.757172,
+          "kl_max": 33.427109,
+          "kl_max_position": 444,
+          "top1_agreement": 0.958805,
+          "top5_overlap": 0.883296,
+          "max_abs_dlogp": 50.779203,
+          "nll_teacher_mean": 0.702693,
+          "nll_candidate_mean": 0.651922
+        }
+      },
+      "llama.cpp-cpu vs cpu-fp32-reference": {
+        "from_position_0": {
+          "positions": 2209,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.105694,
+          "kl_p99": 3.010372,
+          "kl_max": 14.29067,
+          "kl_max_position": 792,
+          "top1_agreement": 0.958805,
+          "top5_overlap": 0.884925,
+          "max_abs_dlogp": 55.170952,
+          "nll_teacher_mean": 0.702693,
+          "nll_candidate_mean": 0.703705
+        }
+      },
+      "gufo-prefill vs gufo-decode": {
+        "from_position_0": {
+          "positions": 2209,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.134464,
+          "kl_p99": 3.604485,
+          "kl_max": 16.070019,
+          "kl_max_position": 1305,
+          "top1_agreement": 0.950656,
+          "top5_overlap": 0.877411,
+          "max_abs_dlogp": 49.074872,
+          "nll_teacher_mean": 0.685152,
+          "nll_candidate_mean": 0.680803
+        }
+      },
+      "gufo-prefill vs llama.cpp-hip": {
+        "from_position_0": {
+          "positions": 2209,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.133556,
+          "kl_p99": 2.981445,
+          "kl_max": 16.412114,
+          "kl_max_position": 1305,
+          "top1_agreement": 0.956541,
+          "top5_overlap": 0.871344,
+          "max_abs_dlogp": 42.58872,
+          "nll_teacher_mean": 0.651922,
+          "nll_candidate_mean": 0.680803
+        }
+      },
+      "gufo-prefill vs cpu-fp32-reference": {
+        "from_position_0": {
+          "positions": 2209,
+          "nonfinite": {
+            "teacher": 0,
+            "candidate": 0
+          },
+          "kl_mean": 0.135694,
+          "kl_p99": 3.241878,
+          "kl_max": 23.057438,
+          "kl_max_position": 1120,
+          "top1_agreement": 0.955183,
+          "top5_overlap": 0.878769,
+          "max_abs_dlogp": 59.926248,
+          "nll_teacher_mean": 0.702693,
+          "nll_candidate_mean": 0.680803
+        }
+      }
+    }
+  }
+}

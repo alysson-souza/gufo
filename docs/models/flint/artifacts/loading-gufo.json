@@ -1,0 +1,73 @@
+{
+  "artifactType": "model-bench-table",
+  "fingerprint": {
+    "canonical": {
+      "cppStandard": "C++20",
+      "cpuArchitecture": "x86_64",
+      "cpuLogicalCores": 32,
+      "cpuModel": "AMD RYZEN AI MAX+ 395 w/ Radeon 8060S",
+      "cpuPhysicalCores": 16,
+      "cxxCompiler": "GCC 15.3.0",
+      "gpuArchitecture": "gfx1151",
+      "gpuComputeUnits": 20,
+      "gpuDriver": "amdgpu",
+      "gpuName": "AMD Radeon 8060S Graphics",
+      "gpuPciId": "1002:1586",
+      "kernelRelease": "7.3.0-2-cachyos",
+      "memoryTotalBytes": 133618798592,
+      "memoryType": "LPDDR5X (Unified)",
+      "rocmVersion": "7.2.3",
+      "schemaVersion": "1.0.0"
+    },
+    "fingerprintId": "80811fcc1505ada0aaa6fcef0938539134fc181fe9543aa1fcc98689a091bc3c",
+    "schemaVersion": "1.0.0"
+  },
+  "measuredOn": "2026-10-23",
+  "mode": "ar",
+  "model": {
+    "id": "Recursive-Flint",
+    "variant": null
+  },
+  "notes": [
+    "file cache reset before each launch with the supplied --drop-caches command",
+    "readiness = HTTP 200 on /ready"
+  ],
+  "referenceName": "llama.cpp",
+  "rows": {
+    "default": {
+      "command": "gufo serve --port 37089 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 262144 --served-model-name bench --think off --max-pending-per-client 8",
+      "ready_s": 4.108,
+      "ready_s_sd": null,
+      "samples": 1
+    }
+  },
+  "schemaVersion": 1,
+  "server": {
+    "command": [
+      "gufo",
+      "serve",
+      "--port",
+      "37089",
+      "--sessions",
+      "1",
+      "llm",
+      "--model",
+      "flint-UD-Q4_K_XL.gguf",
+      "--context",
+      "262144",
+      "--served-model-name",
+      "bench",
+      "--think",
+      "off",
+      "--max-pending-per-client",
+      "8"
+    ]
+  },
+  "source": {
+    "buildMode": "nix-release",
+    "dirty": true,
+    "revision": "1167a94475ad888534a99c9fb72401636cd9f7e7"
+  },
+  "table": "loading",
+  "target": "gufo"
+}
