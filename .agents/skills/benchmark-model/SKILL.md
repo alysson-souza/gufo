@@ -113,8 +113,9 @@ declare AR tables); `tables` keyed by table id with that table's workload, and
 `GET /ready` on Gufo and `GET /health` on llama-server.
 
 Select reference runtimes explicitly: `nix shell .#llama-cpp-reference` for
-Qwen AR/DFlash2, `.#llama-cpp-mtp-reference` for Flash-Next MTP, or
-`.#ds4-reference` for DeepSeek AR/DSpark. Combine the two llama packages when
+Qwen AR/DFlash2, `.#llama-cpp-mtp-reference` for Flash-Next MTP,
+`.#llama-cpp-flint-reference` for Flint, or `.#ds4-reference` for DeepSeek
+AR/DSpark. Combine the two llama packages when
 refreshing both modes. None is part of Gufo, the default dev shell or hosted
 checks. Preserve the pinned recipes under `.devops/nix`; do not use ad-hoc builds.
 Antirez readiness is `/v1/models`. Its HTTP payload lacks stage timings;
@@ -261,11 +262,11 @@ Gufo: `gufo serve llm --think off --max-pending-per-client 8`, greedy, seed
 only for the image-encoder table. The sweep parameters are identical across
 the LLM models so the documents stay comparable.
 
-Flint reference: the same llama.cpp `llama-server` arguments. The pinned
-`.#llama-cpp-reference` (b11069) predates Flint, and no Nix pin exists yet, so
-Flint's reference is an ad-hoc ROCm build of upstream `970b51ce` (Flint support
-from `a37cc461`, ggml-org/llama.cpp#30928), passed with `--reference-binary`.
-Record its revision and build flags in `model-identities.json`. Flint has no
+Flint reference: the same llama.cpp `llama-server` arguments, from
+`.#llama-cpp-flint-reference` (upstream `970b51ce`, build 11827; Flint support
+from `a37cc461`, ggml-org/llama.cpp#30928), passed as
+`--reference-binary llama-server-flint`. The b11069 `.#llama-cpp-reference`
+predates Flint. Flint has no
 speculative mode, so its `bench.json` has no `speculative` section and only
 AR tables.
 

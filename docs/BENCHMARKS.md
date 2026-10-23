@@ -28,7 +28,7 @@ the normal development shell and hosted checks:
 | Qwen AR / DFlash2 | `.#llama-cpp-reference` | `llama-server` |
 | Flash-Next MTP | `.#llama-cpp-mtp-reference` | `llama-server-mtp` |
 | DeepSeek AR / DSpark | `.#ds4-reference` | `ds4-server`, `ds4-bench` |
-| Flint AR | none; ad-hoc ROCm build of llama.cpp `970b51ce` | `llama-server` |
+| Flint AR | `.#llama-cpp-flint-reference` | `llama-server-flint` |
 
 For example, enter the development shell and add only the needed baseline:
 

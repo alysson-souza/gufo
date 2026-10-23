@@ -133,6 +133,7 @@
           ds4-reference = pkgs.${system}.callPackage ./.devops/nix/ds4-reference.nix { };
           llama-cpp-reference = llamaReferences.${system}.release;
           llama-cpp-mtp-reference = llamaReferences.${system}.mtp;
+          llama-cpp-flint-reference = llamaReferences.${system}.flint;
         }
       );
 
