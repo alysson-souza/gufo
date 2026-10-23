@@ -15,6 +15,7 @@ are `gufo bench` on the same GGUF. DRAM read peak is 226 GB/s.
 | Matrix (MMQ) tier for every prefill row count | Retained: required for split invariance. Before it, chunk 64 versus 2048 differed by KL 0.0042 (llama.cpp ubatch 64 vs 512: 0.0028). |
 | Pinned double-buffered snapshot staging on a model-owned stream | Retained: a pageable save on a per-call stream took 99 ms while another session decoded and failed the batching check in 2 of 3 runs; 3/3 pass after. |
 | Uninitialized snapshot storage | Retained: 977 MB save at 32K 65 → 47 ms. |
+| Re-prefill decoded tokens every 512, the remainder on the next extension | Retained for cold-equal continuations (Q8_0 forked chat diverged at step 7): tg1024 Q8_0 57.4 → 55.2 tok/s. Re-prefilling only at the end of a request was not possible: after about 2,060 decoded tokens the sliding-window keys the first re-prefilled row reads are overwritten in the ring. |
 
 ## Kernels
 
