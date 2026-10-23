@@ -147,6 +147,7 @@ endif()
 
 add_library(gufo_core STATIC
   src/core/platform/net.cpp
+  src/core/platform/shutdown_signal.cpp
   src/core/platform/os_info.cpp
   src/core/image.cpp
   src/core/crypto/sha256.cpp
