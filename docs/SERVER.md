@@ -99,6 +99,7 @@ setting independently, including when changing thinking mode.
 | Model / mode | Temperature | Top-p | Top-k | Presence penalty |
 | --- | --- | --- | --- | --- |
 | DeepSeek V4 Flash 0731 (agentic) | 1.0 | 0.95 | 0 | 0 |
+| Recursive Flint | 1.0 | 0.95 | 20 | 0 |
 | Qwen3.8 27B / Flash-Next, thinking | 1.0 | 0.95 | 20 | 0 |
 | Qwen3.8 27B / Flash-Next, thinking off | 0.7 | 0.8 | 20 | 1.5 |
 
@@ -108,6 +109,13 @@ Use `--temperature 0` or request `"temperature": 0` for greedy
 output; `bench` remains greedy by default. Audio and image generation retain
 their own settings.
 Use `--think off` or request `"reasoning_effort": "none"` to disable thinking.
+Flint has no thinking switch: the model decides on each turn whether to open
+`<think>` (its reference SGLang parser ignores `enable_thinking` too), so
+thinking controls and efforts change neither its output nor its sampling
+defaults. The model opens almost every turn with `<think>`; to cap reasoning,
+set a reasoning budget (`--reasoning-budget N` or
+`"reasoning_budget_tokens": N`), which counts from the `<think>` the model
+writes, and `0` closes it immediately.
 DeepSeek maps `minimal`/`low` to `low`, `medium`/`high`/`xhigh` to `high`,
 and `max` to `max`.
 The [functional suite](../tests/functional/README.md) with
@@ -117,7 +125,10 @@ The [functional suite](../tests/functional/README.md) with
 Sources: [Qwen27B](https://huggingface.co/Qwen/Qwen3.8-27B#best-practices),
 [Flash-Next](https://huggingface.co/Qwen/Qwen3.8-Flash-Next#best-practices),
 [DeepSeek 0731](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731/blob/7872f01b1d1fe23eabc4c98b48bffcef5a386062/README.md),
-[DeepSeek thinking defaults](https://api-docs.deepseek.com/guides/thinking_mode).
+[DeepSeek thinking defaults](https://api-docs.deepseek.com/guides/thinking_mode),
+Flint's `generation_config.json` (temperature 1.0, top-p 0.95, top-k 20; the
+[Recursive](https://huggingface.co/RecursiveSI) source checkpoint and its GGUF
+agree).
 DeepSeek's 0.95 top-p is its agentic recommendation; neutral penalties and
 disabled unspecified filters are Gufo defaults.
 
@@ -860,6 +871,16 @@ Historical calls render typed argument values with the chat template's
 `tojson` spelling (`", "` and `": "` separators, raw UTF-8), as llama.cpp's
 Jinja runtime does. Cache reuse requires identical tokens; normalizing an
 assistant's formatting can require replaying that suffix.
+Flint calls (`<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value>...
+</tool_call>`) follow Flint's reference SGLang grammar instead: text before the
+calls holds no protocol markers, calls end the output, and `required` or named
+choices still admit text before the call. Strict tools take their declared
+parameters in declaration order, string values raw and other values JSON
+matching the schema; non-strict tools keep only the call format. Arguments are
+typed as Flint's reference parser types them: `null` where the schema admits
+null, raw text where it admits strings, otherwise JSON when the value parses.
+Every Flint constraint, response formats included, admits an optional leading
+`<think>...</think>`, and a call written inside reasoning stays reasoning.
 Constrained JSON keys follow schema order, with additional
 keys last. Impossible strict schemas are rejected before generation.
 `tool_choice: "required"` and named choices constrain decoding to a declared

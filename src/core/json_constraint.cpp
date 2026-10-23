@@ -10,6 +10,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 #include <tuple>
@@ -578,8 +579,151 @@ public:
 
   std::shared_ptr<const JsonConstraint> OpenToolParameters(
       JsonConstraint::ToolFormat format) {
-    grammar_->root_ = Repeat(OpenToolParameter(format, json::Value::object()));
+    grammar_->root_ =
+        Repeat(format == JsonConstraint::ToolFormat::kFlint
+                   ? FlintOpenArgument()
+                   : OpenToolParameter(format, json::Value::object()));
     return Finish();
+  }
+
+  // Flint's strict arguments as XGrammar's glm_xml format, which Flint's
+  // reference SGLang grammar uses, writes them: the root object's declared
+  // properties in declaration order, required ones mandatory, values admitting
+  // strings as raw text up to `</arg_value>` and other values as JSON matching
+  // their schema. String patterns stay raw text, as on the other native
+  // routes. Other root shapes throw invalid_argument.
+  std::shared_ptr<const JsonConstraint> FlintToolParameters() {
+    const auto* root = NativeSchema(schema_);
+    if (!root || root->member_str("type") != "object" ||
+        root->contains("anyOf") || root->contains("oneOf") ||
+        root->contains("const") || root->contains("enum"))
+      Invalid("Flint tool arguments need an object root");
+    static const auto kNone = json::Value::object();
+    const auto* properties = root->find("properties");
+    if (properties && !properties->is_object())
+      Invalid("properties must be an object");
+    if (!properties)
+      properties = &kNone;
+    std::set<std::string> required;
+    if (const auto* fields = root->find("required")) {
+      if (!fields->is_array())
+        Invalid("required must be an array");
+      for (const auto& field : fields->items()) {
+        if (!field.is_string() || !properties->contains(field.str()))
+          Invalid("required names an undeclared property");
+        required.insert(field.str());
+      }
+    }
+    constexpr std::string_view close = "</arg_value>";
+    Sequence parts;
+    for (const auto& [name, original] : properties->members()) {
+      if (name.empty() || name.find("</arg_key>") != std::string::npos)
+        Invalid("Flint parameter names cannot hold </arg_key>");
+      const auto types = ValueTypes(original, 0);
+      if (types.none())
+        Invalid("parameter admits no value");
+      std::uint32_t value;
+      const auto* schema = NativeSchema(original);
+      const auto* type = schema ? schema->find("type") : nullptr;
+      const bool plain_string =
+          types.count() == 1 && types[kStringType] && type &&
+          type->is_string() && type->str() == "string" &&
+          !schema->contains("anyOf") && !schema->contains("pattern");
+      if (plain_string &&
+          (schema->contains("const") || schema->contains("enum"))) {
+        const auto values = schema->contains("enum")
+                                ? schema->find("enum")->items()
+                                : json::Value::Array{*schema->find("const")};
+        Sequence choices;
+        for (const auto& item : values)
+          if (item.is_string() &&
+              (item.str() + std::string(close)).find(close) ==
+                  item.str().size() &&
+              ValueFor(*schema, item))
+            choices.push_back(Literal(item.str()));
+        value = Alt(choices);
+      } else if (plain_string) {
+        const auto matcher = JsonSchemaLexeme::RawString(
+            StringPredicate(*schema), std::string(close));
+        value = matcher->Check("").complete ? Optional(Lexeme(matcher))
+                                            : Lexeme(matcher);
+      } else if (types[kStringType]) {
+        value = Optional(Lexeme(JsonSchemaLexeme::RawString(
+            json::Value::object(), std::string(close))));
+      } else {
+        value = Visit(original, 1);
+      }
+      const auto member =
+          Seq({Literal("<arg_key>" + name + "</arg_key><arg_value>"), value,
+               Literal(close)});
+      parts.push_back(required.contains(name) ? member : Optional(member));
+    }
+    // Undeclared arguments are admitted after the declared ones only where
+    // the schema leaves the object open.
+    const auto* extra = root->find("additionalProperties");
+    if (extra ? !(extra->is_bool() && !extra->as_bool())
+              : !root->contains("properties"))
+      parts.push_back(Repeat(FlintOpenArgument(*properties)));
+    grammar_->root_ = Seq(std::move(parts));
+    return Finish();
+  }
+
+  // Free text that ends at the first occurrence of a marker. A marker with a
+  // target continues there; one whose target is UINT32_MAX is excluded from
+  // the text. Every state may end the output when `may_end`. The automaton is
+  // carried by the request grammar across tokens, rollback and sampler copies.
+  static std::uint32_t MarkerText(JsonConstraint& grammar,
+                                  std::span<const std::string_view> markers,
+                                  std::span<const std::uint32_t> targets,
+                                  bool may_end) {
+    std::vector<std::string> prefixes{""};
+    std::map<std::string, std::uint32_t, std::less<>> index{{"", 0}};
+    for (const auto marker : markers)
+      for (std::size_t length = 1; length < marker.size(); ++length)
+        if (index
+                .emplace(std::string(marker.substr(0, length)), prefixes.size())
+                .second)
+          prefixes.emplace_back(marker.substr(0, length));
+    const auto base = static_cast<std::uint32_t>(grammar.rules_.size());
+    if (prefixes.size() > kMaxRules - grammar.rules_.size() ||
+        prefixes.size() * 256 > kMaxRules - grammar.classes_.size())
+      Invalid("marker text exceeds the grammar resource budget");
+    grammar.rules_.resize(base + prefixes.size());
+    for (std::size_t state = 0; state < prefixes.size(); ++state) {
+      JsonConstraint::Rule rule;
+      if (may_end)
+        rule.push_back({});
+      std::map<std::uint32_t, std::bitset<256>> destinations;
+      for (unsigned byte = 0; byte < 256; ++byte) {
+        const std::string candidate = prefixes[state] + static_cast<char>(byte);
+        const auto marker = std::ranges::find_if(
+            markers, [&](auto text) { return candidate.ends_with(text); });
+        if (marker != markers.end()) {
+          const auto target = targets[marker - markers.begin()];
+          if (target != UINT32_MAX)
+            destinations[target].set(byte);
+          continue;
+        }
+        std::uint32_t next = base;
+        for (std::size_t length = candidate.size(); length > 0; --length) {
+          const auto found = index.find(
+              std::string_view(candidate).substr(candidate.size() - length));
+          if (found != index.end()) {
+            next = base + found->second;
+            break;
+          }
+        }
+        destinations[next].set(byte);
+      }
+      for (const auto& [next, bytes] : destinations) {
+        rule.push_back(
+            {static_cast<std::uint32_t>(kTerminal | grammar.classes_.size()),
+             next});
+        grammar.classes_.push_back(bytes);
+      }
+      grammar.rules_[base + state] = std::move(rule);
+    }
+    return base;
   }
 
 private:
@@ -620,6 +764,35 @@ private:
       return suffixes[used] = New(std::move(alternatives));
     };
     return suffix(suffix, 0);
+  }
+
+  // One Flint argument with a raw value: the call format without a schema.
+  // Names keep to what the reference parser reads back unchanged and exclude
+  // `declared`, whose arguments their schemas govern.
+  std::uint32_t FlintOpenArgument(
+      const json::Value& declared = json::Value::object()) {
+    std::string pattern = "^";
+    if (!declared.empty()) {
+      pattern += "(?!(?:";
+      bool separator = false;
+      for (const auto& [name, value] : declared.members()) {
+        (void)value;
+        if (separator)
+          pattern += '|';
+        separator = true;
+        pattern += RegexLiteral(name);
+      }
+      pattern += ")$)";
+    }
+    pattern += "[^<\\s](?:[^<\\r\\n]*[^<\\s])?$";
+    auto name_schema = json::parse(R"({"type":"string"})");
+    name_schema["pattern"] = pattern;
+    return Seq({Literal("<arg_key>"),
+                Lexeme(JsonSchemaLexeme::RawString(name_schema, "</arg_key>")),
+                Literal("</arg_key><arg_value>"),
+                Optional(Lexeme(JsonSchemaLexeme::RawString(
+                    json::Value::object(), "</arg_value>"))),
+                Literal("</arg_value>")});
   }
 
   std::uint32_t OpenToolParameter(JsonConstraint::ToolFormat format,
@@ -1778,6 +1951,24 @@ std::shared_ptr<const JsonConstraint> JsonConstraint::ToolParameters(
     if (const auto found = cache.find(key); found != cache.end())
       return found->second;
   }
+  if (format == ToolFormat::kFlint) {
+    // Flint's reference grammar enforces a schema only for strict tools.
+    // A strict root the native format cannot carry keeps the call format.
+    std::shared_ptr<const JsonConstraint> grammar;
+    if (strict) {
+      try {
+        grammar =
+            JsonConstraintCompiler(schema, true, true).FlintToolParameters();
+      } catch (const std::invalid_argument&) {
+      }
+    }
+    if (!grammar)
+      grammar = OpenToolParameters(format);
+    const std::lock_guard lock(mutex);
+    if (cache.size() >= 16)
+      cache.erase(cache.begin());
+    return cache.emplace(key, std::move(grammar)).first->second;
+  }
   const auto* properties = schema.find("properties");
   const auto* additional = schema.find("additionalProperties");
   const bool untyped = !strict && (!properties || properties->empty()) &&
@@ -1875,7 +2066,14 @@ std::shared_ptr<const JsonConstraint> JsonConstraint::OpenToolParameters(
     return JsonConstraintCompiler(schema, false)
         .OpenToolParameters(ToolFormat::kDeepSeek);
   }();
-  return format == ToolFormat::kQwen ? qwen : deepseek;
+  static const auto flint = [] {
+    const auto schema = json::Value::object();
+    return JsonConstraintCompiler(schema, false)
+        .OpenToolParameters(ToolFormat::kFlint);
+  }();
+  return format == ToolFormat::kQwen    ? qwen
+         : format == ToolFormat::kFlint ? flint
+                                        : deepseek;
 }
 
 std::shared_ptr<const JsonConstraint> JsonConstraint::WithReasoning(
@@ -1952,6 +2150,44 @@ std::shared_ptr<const JsonConstraint> JsonConstraint::WithReasoning(
   return cache.emplace(std::move(answer), std::move(grammar)).first->second;
 }
 
+std::shared_ptr<const JsonConstraint> JsonConstraint::WithOptionalReasoning(
+    std::shared_ptr<const JsonConstraint> answer) {
+  if (!answer)
+    return answer;
+  static std::mutex mutex;
+  static std::map<std::shared_ptr<const JsonConstraint>,
+                  std::shared_ptr<const JsonConstraint>>
+      cache;
+  {
+    const std::lock_guard lock(mutex);
+    if (const auto found = cache.find(answer); found != cache.end())
+      return found->second;
+  }
+  auto grammar = std::shared_ptr<JsonConstraint>(new JsonConstraint(*answer));
+  // Flint's reference grammar (flint_sglang reasoning_then): reasoning stops
+  // at </think> and never runs into a turn-end marker.
+  static constexpr std::array<std::string_view, 4> kEnds{
+      "</think>", "<|end_of_text|>", "<|user|>", "<|observation|>"};
+  const std::array<std::uint32_t, 4> targets{answer->root_, UINT32_MAX,
+                                             UINT32_MAX, UINT32_MAX};
+  // Like WithReasoning: automatic calls must not turn a natural
+  // reasoning-only stop into a mandatory call.
+  const auto body = JsonConstraintCompiler::MarkerText(
+      *grammar, kEnds, targets, grammar->automatic_tools_);
+  Sequence open;
+  for (const unsigned char byte : std::string_view("<think>"))
+    open.push_back(kTerminal | byte);
+  open.push_back(body);
+  grammar->root_ = grammar->rules_.size();
+  grammar->rules_.push_back({{answer->root_}, std::move(open)});
+  const std::lock_guard lock(mutex);
+  if (const auto found = cache.find(answer); found != cache.end())
+    return found->second;
+  if (cache.size() >= 16)
+    cache.erase(cache.begin());
+  return cache.emplace(std::move(answer), std::move(grammar)).first->second;
+}
+
 std::shared_ptr<const JsonConstraint> JsonConstraint::WithTools(
     std::shared_ptr<const JsonConstraint> answer, std::vector<Tool> tools,
     bool required, bool parallel, ToolFormat format) {
@@ -1997,11 +2233,17 @@ std::shared_ptr<const JsonConstraint> JsonConstraint::WithTools(
     return id;
   };
   const bool deepseek = format == ToolFormat::kDeepSeek;
+  const bool flint = format == ToolFormat::kFlint;
+  // Qwen and DeepSeek calls may implicitly end reasoning. Flint always closes
+  // </think> before it calls a tool.
+  const bool reasoning_calls =
+      format == ToolFormat::kQwen || format == ToolFormat::kDeepSeek;
   const std::string_view marker =
       deepseek ? "<｜DSML｜tool_calls>" : "<tool_call>";
   const auto end = literal(format == ToolFormat::kJson ? "}</tool_call>"
                            : deepseek                  ? "</｜DSML｜invoke>"
-                                      : "</function>\n</tool_call>");
+                           : flint ? "</tool_call>"
+                                   : "</function>\n</tool_call>");
   const auto calls = static_cast<std::uint32_t>(grammar->rules_.size());
   grammar->rules_.push_back({});
   // In tool-only mode ordinary text remains unconstrained until a canonical
@@ -2037,13 +2279,32 @@ std::shared_ptr<const JsonConstraint> JsonConstraint::WithTools(
     }
     return base;
   };
-  const auto prose = plain_answer ? text(calls) : UINT32_MAX;
+  // Flint's reference grammar (flint_sglang tool_grammar): text before the
+  // calls holds none of the protocol markers, and `<tool_call>` opens a call.
+  // The reference also lets a required call follow text; gufo is stricter
+  // (#315): a required or named choice starts with the call, so prose
+  // pressure cannot leave the requirement unmet.
+  static constexpr std::array<std::string_view, 15> kFlintProtocolMarkers{
+      "<tool_call>",       "<think>",         "</think>",       "</tool_call>",
+      "<arg_key>",         "</arg_key>",      "<arg_value>",    "</arg_value>",
+      "<|begin_of_text|>", "<|end_of_text|>", "<|system|>",     "<|developer|>",
+      "<|user|>",          "<|assistant|>",   "<|observation|>"};
+  const auto flint_prose = [&] {
+    std::array<std::uint32_t, kFlintProtocolMarkers.size()> targets;
+    targets.fill(UINT32_MAX);
+    targets[0] = calls;
+    return JsonConstraintCompiler::MarkerText(*grammar, kFlintProtocolMarkers,
+                                              targets, true);
+  };
+  const auto prose = !plain_answer ? UINT32_MAX
+                     : flint       ? (required ? UINT32_MAX : flint_prose())
+                                   : text(calls);
   // As in llama.cpp's DeepSeek V4 and Qwen3-Coder parsers, calls end the
   // output: parallel calls share one DeepSeek block, Qwen calls may follow
   // each other, and no text may follow them. Text after a call is where
   // echoed framing used to leak into content (#383, #438).
   const bool qwen = format == ToolFormat::kQwen;
-  const bool ends_output = deepseek || qwen || !plain_answer;
+  const bool ends_output = deepseek || qwen || flint || !plain_answer;
   auto after = ends_output ? static_cast<std::uint32_t>(grammar->rules_.size())
                : parallel  ? prose
                            : text(UINT32_MAX);
@@ -2092,7 +2353,7 @@ std::shared_ptr<const JsonConstraint> JsonConstraint::WithTools(
   std::map<const JsonConstraint*, std::uint32_t> imported;
   if (answer)
     imported.emplace(answer.get(), answer->root_);
-  if (format != ToolFormat::kJson) {
+  if (reasoning_calls) {
     grammar->reasoning_tool_prefix_ =
         deepseek ? "<｜DSML｜tool_calls>\n<｜DSML｜invoke name=\""
                  : "<tool_call>\n<function=";
@@ -2104,11 +2365,12 @@ std::shared_ptr<const JsonConstraint> JsonConstraint::WithTools(
         format == ToolFormat::kJson
             ? "{\"name\":" + json::Value(name).dump() + ",\"arguments\":"
         : deepseek ? "\n<｜DSML｜invoke name=\"" + name + "\">\n"
+        : flint    ? name
                    : "\n<function=" + name + ">\n");
     if (const auto found = imported.find(arguments.get());
         found != imported.end()) {
       grammar->rules_[calls].push_back({begin, found->second, end, after});
-      if (format != ToolFormat::kJson) {
+      if (reasoning_calls) {
         const auto named = literal(name + (deepseek ? "\">\n" : ">\n"));
         grammar->rules_[grammar->reasoning_tool_root_].push_back(
             {named, found->second, end, after});
@@ -2148,7 +2410,7 @@ std::shared_ptr<const JsonConstraint> JsonConstraint::WithTools(
     const auto root = static_cast<std::uint32_t>(arguments->root_ + rules);
     imported.emplace(arguments.get(), root);
     grammar->rules_[calls].push_back({begin, root, end, after});
-    if (format != ToolFormat::kJson) {
+    if (reasoning_calls) {
       const auto named = literal(name + (deepseek ? "\">\n" : ">\n"));
       grammar->rules_[grammar->reasoning_tool_root_].push_back(
           {named, root, end, after});
@@ -2157,6 +2419,9 @@ std::shared_ptr<const JsonConstraint> JsonConstraint::WithTools(
   if (plain_answer && !required)
     alternatives.push_back({prose});
   else if (format == ToolFormat::kJson)
+    alternatives.push_back({literal(marker), calls});
+  else if (flint)
+    // Canonical Flint framing has no whitespace before the call.
     alternatives.push_back({literal(marker), calls});
   else {
     std::bitset<256> whitespace;

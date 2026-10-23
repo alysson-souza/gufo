@@ -242,6 +242,30 @@ void TestCompactTargetContract() {
   }
 }
 
+// A model that opens reasoning itself: the budget waits for its start tag
+// (token 6) instead of counting the answer.
+void TestReasoningBudgetAwaitsGeneratedStart() {
+  auto budget = std::make_shared<ReasoningBudget>(*Budget(2));
+  budget->start = 6;
+  SamplingConfig config;
+  config.reasoning_budget = budget;
+  SamplerState answer(config);
+  answer.Accept(std::vector<TokenId>{1, 1, 1, 1});
+  Expect(!answer.ForcedToken(), "an answer without reasoning is not counted");
+  SamplerState reasoning(config);
+  reasoning.Accept(std::vector<TokenId>{6, 1});
+  Expect(!reasoning.ForcedToken(), "counting starts after the start tag");
+  reasoning.Accept(1);
+  Expect(reasoning.ForcedToken() == TokenId{3},
+         "the generated start tag opens the budget");
+  budget->tokens = 0;
+  SamplerState zero(config);
+  Expect(!zero.ForcedToken(), "a zero budget waits for the start tag");
+  zero.Accept(6);
+  Expect(zero.ForcedToken() == TokenId{3},
+         "a zero budget closes reasoning right after its start tag");
+}
+
 }  // namespace
 
 int main() {
@@ -251,6 +275,7 @@ int main() {
   TestReasoningBudgetKeepsLiteralAnswer();
   TestReasoningBudgetWithGrammar();
   TestCompactTargetContract();
+  TestReasoningBudgetAwaitsGeneratedStart();
   std::cout << "sampling_test passed\n";
   return 0;
 }

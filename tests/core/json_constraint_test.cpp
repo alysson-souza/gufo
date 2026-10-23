@@ -2243,6 +2243,150 @@ void TestLlamaCppToolGrammarGoldens() {
   assert(rows == 688 && differences < rows / 5);
 }
 
+// Flint's turn grammar follows flint_sglang's tool_grammar: text without
+// protocol markers, then calls; strict tools in declaration order with
+// schema-typed values, other tools in call format only; an optional leading
+// think block.
+void TestFlintTools() {
+  using Format = JsonConstraint::ToolFormat;
+  const auto schema = parse(R"({"type":"object","properties":{
+    "city":{"type":"string"},"days":{"type":"integer","minimum":1},
+    "units":{"type":"string","enum":["metric","imperial"]},
+    "tags":{"type":"array","items":{"type":"string"}}},
+    "required":["city","days"],"additionalProperties":false})");
+  const auto strict =
+      JsonConstraint::ToolParameters(schema, true, Format::kFlint);
+  const auto open =
+      JsonConstraint::ToolParameters(schema, false, Format::kFlint);
+  const auto arg = [](std::string_view key, std::string_view value) {
+    return "<arg_key>" + std::string(key) + "</arg_key><arg_value>" +
+           std::string(value) + "</arg_value>";
+  };
+  const std::string city = arg("city", "Paris, \"FR\"\n<b>");
+  assert(Accepts(*strict, city + arg("days", "3")));
+  assert(Accepts(*strict, city + arg("days", "3") + arg("units", "metric") +
+                              arg("tags", R"(["a", "b"])")));
+  assert(!Accepts(*strict, arg("days", "3") + city));
+  assert(!Accepts(*strict, city));
+  assert(!Accepts(*strict, city + arg("days", "0")));
+  assert(!Accepts(*strict, city + arg("days", "\"3\"")));
+  assert(!Accepts(*strict, city + arg("days", "3") + arg("units", "kelvin")));
+  assert(!Accepts(*strict, city + arg("days", "3") + arg("extra", "1")));
+  assert(!Accepts(*strict, arg("city", "a</arg_value>b") + arg("days", "3")));
+  assert(Accepts(*open,
+                 arg("days", "\"x\"") + city + arg("anything_else", "[1,")));
+  assert(Accepts(*open, ""));
+  assert(!Accepts(*open, arg("", "1")));
+  assert(!Accepts(*open, "<arg_key>a</arg_key>\n<arg_value>1</arg_value>"));
+  // A strict schema with an open object admits undeclared arguments after
+  // the declared ones.
+  const auto extensible = JsonConstraint::ToolParameters(
+      parse(R"({"type":"object","properties":{"a":{"type":"integer"}},
+        "additionalProperties":true})"),
+      true, Format::kFlint);
+  assert(Accepts(*extensible, arg("a", "1") + arg("b", "text")));
+  assert(!Accepts(*extensible, arg("a", "x")));
+
+  const std::vector<JsonConstraint::Tool> tools{{"get_weather", strict},
+                                                {"note", open}};
+  const std::string call =
+      "<tool_call>get_weather" + city + arg("days", "3") + "</tool_call>";
+  const std::string note = "<tool_call>note" + arg("x", "y") + "</tool_call>";
+  const auto automatic =
+      JsonConstraint::WithTools(nullptr, tools, false, true, Format::kFlint);
+  assert(Accepts(*automatic, "Plain answer."));
+  assert(Accepts(*automatic, "Let me check. " + call));
+  assert(Accepts(*automatic, call + note));
+  assert(!Accepts(*automatic, call + " trailing text"));
+  assert(!Accepts(*automatic, "<tool_call>other</tool_call>"));
+  assert(!Accepts(*automatic, "<tool_call>get_weather" + city +
+                                  arg("days", "x") + "</tool_call>"));
+  for (const std::string_view marker :
+       {"<think>", "</think>", "</tool_call>", "<arg_key>", "</arg_value>",
+        "<|user|>", "<|end_of_text|>", "<|assistant|>", "<|developer|>"})
+    assert(!Accepts(*automatic, "text " + std::string(marker) + " more"));
+  const auto single =
+      JsonConstraint::WithTools(nullptr, tools, false, false, Format::kFlint);
+  assert(Accepts(*single, call));
+  assert(!Accepts(*single, call + note));
+  const auto required =
+      JsonConstraint::WithTools(nullptr, tools, true, true, Format::kFlint);
+  // Stricter than flint_sglang (#315): a required or named choice starts
+  // with the call, so prose pressure cannot leave the requirement unmet.
+  assert(Accepts(*required, call));
+  assert(!Accepts(*required, "Checking. " + call));
+  assert(!Accepts(*required, " " + call));
+  assert(!Accepts(*required, "No call."));
+  const decltype(tools) only_first{tools.front()};
+  const auto named = JsonConstraint::WithTools(nullptr, only_first, true, false,
+                                               Format::kFlint);
+  assert(Accepts(*named, call));
+  assert(!Accepts(*named, "Sure. " + call));
+
+  const auto reasoning = JsonConstraint::WithOptionalReasoning(automatic);
+  assert(Accepts(*reasoning, "Plain answer."));
+  assert(
+      Accepts(*reasoning,
+              "<think>Mention <tool_call> and <|assistant|>.</think>" + call));
+  assert(Accepts(*reasoning, "<think>short</think>Answer."));
+  assert(!Accepts(*reasoning, "<think>a<|user|>b</think>x"));
+  assert(!Accepts(*reasoning, "<think>a</think><think>b</think>"));
+  assert(Accepts(*reasoning, "<think>a natural stop"));
+  const auto required_reasoning =
+      JsonConstraint::WithOptionalReasoning(required);
+  assert(!Accepts(*required_reasoning, "<think>a natural stop"));
+  assert(Accepts(*required_reasoning, "<think>plan</think>" + call));
+  assert(!Accepts(*required_reasoning, "<think>plan</think>Sure. " + call));
+  assert(Accepts(*JsonConstraint::WithOptionalReasoning(named),
+                 "<think>plan</think>" + call));
+
+  const auto answer = JsonConstraint::Compile(
+      parse(R"({"type":"object","properties":{"ok":{"type":"boolean"}},
+        "required":["ok"],"additionalProperties":false})"),
+      true);
+  const auto structured = JsonConstraint::WithOptionalReasoning(answer);
+  assert(Accepts(*structured, R"({"ok":true})"));
+  assert(Accepts(*structured, R"(<think>plan</think>{"ok":false})"));
+  assert(!Accepts(*structured, "<think>plan</think>no"));
+  assert(!Accepts(*structured, "<think>plan"));
+
+  // The token mask agrees with byte-level evaluation, including special
+  // tokens whose pieces are protocol markers.
+  const std::vector<ConstraintVocabulary::Piece> pieces{{"word"},
+                                                        {"<think>"},
+                                                        {"</think>"},
+                                                        {"<tool_call>"},
+                                                        {"get_weather"},
+                                                        {"note"},
+                                                        {"<arg_key>"},
+                                                        {call},
+                                                        {"<|user|>"},
+                                                        {"<"},
+                                                        {"</arg"},
+                                                        {R"({"ok":true})"},
+                                                        {""},
+                                                        {"", true}};
+  const ConstraintVocabulary vocabulary(pieces.size(),
+                                        [&](auto id) { return pieces[id]; });
+  for (const auto& grammar : {reasoning, required_reasoning, structured}) {
+    for (const std::string prefix :
+         {"", "<think>", "<think>plan <", "<think>plan</think>", "Text ",
+          "<tool_call>", "<tool_call>get_weather<arg_key>city</arg_key>"}) {
+      auto state = grammar->Start();
+      for (const unsigned char byte : prefix) {
+        state = grammar->Advance(state, byte);
+        if (state.empty())
+          break;
+      }
+      if (state.empty())
+        continue;
+      const auto mask = vocabulary.Allowed(*grammar, state);
+      for (std::uint32_t id = 0; id < pieces.size(); ++id)
+        assert(bool(mask[id]) == vocabulary.Allows(*grammar, state, id));
+    }
+  }
+}
+
 int main(int argc, char** argv) {
   // Batch probes for the independent Python JSON Schema validator. This
   // exercises the production byte matcher without requiring model weights.
@@ -2299,6 +2443,7 @@ int main(int argc, char** argv) {
   TestToolSchemaSafety();
   TestNativeToolSchemaMatrix();
   TestLlamaCppToolGrammarGoldens();
+  TestFlintTools();
   std::cout << "JSON constraints: language, schema, Unicode and sampler checks "
                "passed\n";
 }

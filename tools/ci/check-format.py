@@ -15,6 +15,7 @@ def main() -> int:
         "src/models/deepseek_v4_flash/runtime/",
         "src/models/deepseek_v4_flash/kernels/rocm/",
         "src/models/qwen38_flash_next/kernels/rocm/mmq/",
+        "src/models/flint/kernels/rocm/mmq/",
     )
     files = sorted(
         str(path.relative_to(root))

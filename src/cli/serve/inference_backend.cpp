@@ -43,6 +43,8 @@
 #include "src/core/speculative/speculative_verifier.hpp"
 #include "src/models/deepseek_v4_flash/dspark_sampler.hpp"
 #include "src/models/deepseek_v4_flash/engine.hpp"
+#include "src/models/flint/chat_template.hpp"
+#include "src/models/flint/engine.hpp"
 #include "src/models/qwen/continuation_adapter.hpp"
 #include "src/models/qwen/hip/detail/attention_policy.hpp"
 #include "src/models/qwen/hip/dflash.hpp"
@@ -2284,6 +2286,460 @@ bool FingerprintArtifactFile(std::string_view label,
   return FingerprintArtifact(label, *reader, fingerprint, error);
 }
 
+// Each Flint request owns one session: every full-attention KV row and the
+// last sliding window of the others. A snapshot is a host copy of that prefix
+// including its frontier logits, so RAM, disk and live reuse resume exactly.
+constexpr std::string_view kFlintStateAbi = "flint-gfx1151-session-v1";
+// Widest decode batch served, as for the other models' batched plans.
+constexpr std::size_t kFlintMaxBatchWidth = 8;
+
+std::vector<std::uint8_t> FlintCompatibilityIdentity(
+    std::string_view artifact_fingerprint, std::uint32_t max_context) {
+  if (!IsSha256Hex(artifact_fingerprint)) {
+    throw std::invalid_argument(
+        "Flint disk cache requires an artifact fingerprint");
+  }
+  std::ostringstream identity;
+  identity << "schema=gufo-text-continuation-v2\n"
+           << "model_kind=flint\n"
+           << "artifact_id=" << core::kGgufIdentityScheme << ':'
+           << artifact_fingerprint << '\n'
+           << "tokenizer=flint-byte-bpe-v1\n"
+           << "chat_template=" << models::flint::ChatTemplateId() << '\n'
+           << "chat_template_reference_sha256="
+           << models::flint::ArtifactTemplateSha256() << '\n'
+           << "state_abi=" << kFlintStateAbi << '\n'
+           << "payload_layout=flint-rocm-session-snapshot-v"
+           << models::flint::SessionSnapshot::kPayloadVersion << '\n'
+           << "context_tokens=" << max_context << '\n'
+           << "position_policy=absolute-v1\n"
+           << "rope_window_policy=flint-gguf-pattern-v1\n"
+           << "adapters=none\n";
+  const std::string canonical = identity.str();
+  return {canonical.begin(), canonical.end()};
+}
+
+class FlintTextRunnerState final : public TextRunnerState {
+public:
+  FlintTextRunnerState(const std::shared_ptr<models::flint::Model>& model,
+                       std::uint32_t max_context) {
+    std::string error;
+    session_ = model->CreateSession(max_context, &error);
+    if (session_ == nullptr) {
+      throw std::runtime_error("Failed to create Flint session: " + error);
+    }
+  }
+
+  void SetCancellationCheck(const CancellationCheck& is_cancelled) override {
+    is_cancelled_ = is_cancelled;
+    session_->SetCancellationCheck(is_cancelled);
+  }
+
+  void Invalidate() noexcept override {
+    is_cancelled_ = nullptr;
+    session_->SetCancellationCheck({});
+    session_->Invalidate();
+    position_ = 0;
+  }
+
+  [[nodiscard]] bool cancelled() const {
+    return is_cancelled_ && is_cancelled_();
+  }
+  [[nodiscard]] models::flint::Session& session() const { return *session_; }
+  [[nodiscard]] std::size_t position() const noexcept { return position_; }
+  void set_position(std::size_t position) noexcept { position_ = position; }
+
+private:
+  std::unique_ptr<models::flint::Session> session_;
+  CancellationCheck is_cancelled_;
+  std::size_t position_{0};
+};
+
+class FlintTextRunnerSnapshot final : public TextRunnerSnapshot {
+public:
+  FlintTextRunnerSnapshot(
+      std::shared_ptr<models::flint::Model> model,
+      std::unique_ptr<models::flint::SessionSnapshot> snapshot,
+      std::size_t position)
+      : model(std::move(model)),
+        snapshot(std::move(snapshot)),
+        position(position) {}
+
+  [[nodiscard]] std::size_t PayloadBytes() const noexcept override {
+    return snapshot == nullptr ? 0 : snapshot->bytes().size();
+  }
+
+  std::shared_ptr<models::flint::Model> model;
+  std::unique_ptr<models::flint::SessionSnapshot> snapshot;
+  std::size_t position;
+};
+
+FlintTextRunnerState& RequireFlintState(TextRunnerState& state) {
+  auto* flint = dynamic_cast<FlintTextRunnerState*>(&state);
+  if (flint == nullptr) {
+    throw std::logic_error("text runner state is not Flint");
+  }
+  return *flint;
+}
+
+const FlintTextRunnerState& RequireFlintState(const TextRunnerState& state) {
+  const auto* flint = dynamic_cast<const FlintTextRunnerState*>(&state);
+  if (flint == nullptr) {
+    throw std::logic_error("text runner state is not Flint");
+  }
+  return *flint;
+}
+
+class FlintTextRunner final : public HipTextModelRunner {
+public:
+  FlintTextRunner(std::shared_ptr<models::flint::Model> model,
+                  std::uint32_t max_context,
+                  std::string artifact_fingerprint = {})
+      : model_(std::move(model)), max_context_(max_context) {
+    if (!artifact_fingerprint.empty()) {
+      persistence_ = TextRunnerPersistenceDescriptor{
+          .compatibility_identity =
+              FlintCompatibilityIdentity(artifact_fingerprint, max_context_),
+          .payload_version = models::flint::SessionSnapshot::kPayloadVersion,
+      };
+    }
+  }
+
+  [[nodiscard]] sampling::JsonConstraint::ToolFormat ToolFormat()
+      const override {
+    return sampling::JsonConstraint::ToolFormat::kFlint;
+  }
+
+  [[nodiscard]] TextRunnerDescriptor Descriptor() const override {
+    return {
+        .model_id = model_->ModelName(),
+        .state_abi = std::string(kFlintStateAbi),
+        .max_context = max_context_,
+        .capabilities =
+            TextRunnerCapabilities{
+                .incremental_prefill = true,
+                .snapshot = true,
+                .fork = true,
+                .final_token_advance_required = false,
+                // Decode concatenates the raw bytes of every token.
+                .incremental_text_is_exact = true,
+                .prefix_reuse = true,
+                .partial_prefill_retention = true,
+                .prefill_rollback = true,
+            },
+        .persistence = persistence_,
+    };
+  }
+
+  [[nodiscard]] TextRunnerResourceClaim ResourceClaim() const override {
+    std::size_t free_bytes = 0;
+    std::size_t total_bytes = 0;
+    std::optional<std::size_t> capacity;
+    if (hipMemGetInfo(&free_bytes, &total_bytes) == hipSuccess) {
+      capacity = free_bytes;
+    }
+    return {
+        .resident_weights_bytes = model_->ResidentBytes(),
+        .state_capacity_bytes = capacity,
+        .per_request_state_bytes = model_->SessionBytes(max_context_),
+        // Execution scratch is model-wide and allocated at load.
+        .temporary_scratch_bytes = 0,
+        .retained_snapshot_capacity_bytes = HostSnapshotBudgetBytes(),
+        .retained_snapshot_ceiling_bytes = HostSnapshotCeilingBytes(),
+        .requires_device_runtime_lock = true,
+    };
+  }
+
+  [[nodiscard]] std::vector<TextExecutionPlan> SupportedPlans() const override {
+    std::vector<TextExecutionPlan> plans{
+        {.kind = TextExecutionPlanKind::kSerial, .physical_width = 1}};
+    const std::size_t widest =
+        std::min(kFlintMaxBatchWidth, model_->MaxBatch());
+    for (std::size_t width = 2; width <= widest; ++width) {
+      plans.push_back(
+          {.kind = TextExecutionPlanKind::kBatched, .physical_width = width});
+    }
+    return plans;
+  }
+
+  [[nodiscard]] std::shared_ptr<const sampling::ConstraintVocabulary>
+  BuildConstraintVocabulary() const override {
+    return std::make_shared<const sampling::ConstraintVocabulary>(
+        tokenizer().VocabSize(), [this](std::uint32_t id) {
+          return sampling::ConstraintVocabulary::Piece{
+              std::string(tokenizer().TokenBytes(id)),
+              tokenizer().IsEndOfGeneration(id)};
+        });
+  }
+  [[nodiscard]] std::uint32_t VocabularySize() const override {
+    return tokenizer().VocabSize();
+  }
+
+  [[nodiscard]] std::vector<TextRunnerToken> Tokenize(
+      std::string_view text) const override {
+    return tokenizer().Encode(text, false);
+  }
+  [[nodiscard]] std::vector<TextRunnerToken> TokenizeControl(
+      std::string_view text) const override {
+    return tokenizer().Encode(text, true);
+  }
+
+  [[nodiscard]] std::optional<std::vector<TextRunnerToken>> RenderAndTokenize(
+      const ChatRequest& request) const override {
+    auto tokens = model_->EncodeChat(
+        request.messages,
+        request.tool_choice == ChatRequest::ToolChoice::kNone
+            ? std::span<const tokenization::ChatTool>{}
+            : std::span<const tokenization::ChatTool>{request.tools});
+    if (tokens.empty()) {
+      return std::nullopt;
+    }
+    return tokens;
+  }
+
+  [[nodiscard]] std::optional<TextPreparedPrompt> PreparePrompt(
+      const ChatRequest& request) const override {
+    auto prepared = TextModelRunner::PreparePrompt(request);
+    if (prepared) {
+      // The tool preamble follows the leading system messages, so the next
+      // user turn can move it. Measure the prefix a continuation shares
+      // instead of assuming only the generation prompt changes.
+      auto continuation = request;
+      continuation.messages.emplace_back(tokenization::ChatRole::kUser, "");
+      const auto continued = RenderAndTokenize(continuation);
+      if (continued) {
+        prepared->cache_prefix_tokens = static_cast<std::size_t>(
+            std::mismatch(prepared->tokens.begin(), prepared->tokens.end(),
+                          continued->begin(), continued->end())
+                .first -
+            prepared->tokens.begin());
+      }
+    }
+    return prepared;
+  }
+
+  [[nodiscard]] std::string Decode(
+      std::span<const TextRunnerToken> tokens) const override {
+    return tokenizer().Decode(tokens);
+  }
+
+  [[nodiscard]] std::unique_ptr<TextRunnerState> CreateState() const override {
+    return std::make_unique<FlintTextRunnerState>(model_, max_context_);
+  }
+
+  void PreparePrefixReuse(
+      TextRunnerState& state,
+      std::span<const TextRunnerToken> prefix) const override {
+    const auto& flint = RequireFlintState(state);
+    if (flint.position() != prefix.size() ||
+        flint.session().Position() != prefix.size()) {
+      throw std::logic_error("Flint reused prefix does not match checkpoint");
+    }
+  }
+
+  [[nodiscard]] TextPrefillStep Prefill(
+      TextRunnerState& state, std::span<const TextRunnerToken> prompt,
+      std::size_t offset, std::size_t max_input_tokens) const override {
+    auto& flint = RequireFlintState(state);
+    if (offset != flint.position()) {
+      throw std::logic_error(
+          "Flint prefill offset does not match retained state");
+    }
+    if (offset >= prompt.size()) {
+      throw std::logic_error("Flint prefill has no remaining input");
+    }
+    const std::size_t consumed =
+        std::min<std::size_t>({max_input_tokens, prompt.size() - offset,
+                               flint.session().PrefillCapacity()});
+    if (consumed == 0) {
+      throw std::logic_error("Flint prefill has no token budget");
+    }
+    const std::size_t next_position = offset + consumed;
+    std::string error;
+    if (!flint.session().Sync(prompt.first(next_position), &error)) {
+      // A cancelled Sync leaves the session at its entry frontier.
+      if (flint.cancelled() && flint.session().Position() == offset) {
+        return {.interrupted = true};
+      }
+      throw std::runtime_error("Flint prefill failed: " + error);
+    }
+    flint.set_position(next_position);
+    return {
+        .consumed_tokens = consumed,
+        .decode_ready = next_position == prompt.size(),
+    };
+  }
+
+  [[nodiscard]] TextDecodeSelection SelectNext(
+      TextRunnerState& state, sampling::SamplerState& sampler) const override {
+    auto& flint = RequireFlintState(state);
+    if (flint.position() >= max_context_)
+      return {.stop = true, .piece = {}};
+    const auto logits = flint.session().Logits();
+    if (logits.empty()) {
+      throw std::logic_error("Flint state has no frontier logits");
+    }
+    const auto token = static_cast<TextRunnerToken>(sampler.Sample(logits));
+    if (flint.stop_at_eos() && tokenizer().IsEndOfGeneration(token)) {
+      return {.stop = true, .token = 0, .piece = {}};
+    }
+    return {
+        .stop = false,
+        .token = token,
+        .piece = std::string(tokenizer().TokenBytes(token)),
+    };
+  }
+
+  // Selection reads the frontier without mutating the session, so a preview
+  // with a copied sampler is exactly the token SelectNext will choose.
+  [[nodiscard]] std::optional<TextDecodeSelection> PreviewFirstToken(
+      TextRunnerState& state, sampling::SamplerState& sampler) const override {
+    return SelectNext(state, sampler);
+  }
+
+  void Advance(TextRunnerState& state, TextRunnerToken token) const override {
+    auto& flint = RequireFlintState(state);
+    std::string error;
+    if (!flint.session().Evaluate(token, &error)) {
+      throw std::runtime_error("Flint decode failed: " + error);
+    }
+    flint.set_position(flint.position() + 1);
+  }
+
+  void AdvanceBatch(
+      std::span<const TextRunnerAdvance> advances) const override {
+    if (advances.size() < 2 || advances.size() > kFlintMaxBatchWidth) {
+      throw std::invalid_argument(
+          "Flint batched decode requires two to eight sessions");
+    }
+    std::array<models::flint::SessionBatchItem, kFlintMaxBatchWidth> items{};
+    std::array<FlintTextRunnerState*, kFlintMaxBatchWidth> states{};
+    for (std::size_t index = 0; index < advances.size(); ++index) {
+      states[index] = &RequireFlintState(advances[index].state.get());
+      items[index] = {
+          .session = &states[index]->session(),
+          .token = advances[index].token,
+      };
+    }
+    std::string error;
+    bool interrupted = false;
+    if (!model_->EvaluateBatch(std::span<const models::flint::SessionBatchItem>(
+                                   items.data(), advances.size()),
+                               &error, &interrupted)) {
+      // Cancellation is rejected before any session changes. Isolate the
+      // cancelled row rather than failing every request in the batch.
+      if (interrupted) {
+        TextModelRunner::AdvanceBatch(advances);
+        return;
+      }
+      throw std::runtime_error("Flint batch decode failed: " + error);
+    }
+    for (std::size_t index = 0; index < advances.size(); ++index) {
+      states[index]->set_position(states[index]->position() + 1);
+    }
+  }
+
+  [[nodiscard]] std::size_t CheckpointPosition(
+      const TextRunnerState& state) const override {
+    return RequireFlintState(state).position();
+  }
+
+  [[nodiscard]] std::size_t SnapshotPayloadBytes(
+      const TextRunnerState& state) const override {
+    const std::uint64_t bytes =
+        RequireFlintState(state).session().PayloadBytes();
+    if (bytes == 0 || bytes > static_cast<std::uint64_t>(
+                                  std::numeric_limits<std::size_t>::max())) {
+      throw std::overflow_error("Flint snapshot size is unavailable");
+    }
+    return static_cast<std::size_t>(bytes);
+  }
+
+  [[nodiscard]] std::unique_ptr<TextRunnerSnapshot> Snapshot(
+      const TextRunnerState& state) const override {
+    const auto& flint = RequireFlintState(state);
+    std::string error;
+    auto snapshot = flint.session().SaveSnapshot(&error);
+    if (snapshot == nullptr) {
+      throw std::runtime_error("Flint snapshot failed: " + error);
+    }
+    return std::make_unique<FlintTextRunnerSnapshot>(
+        model_, std::move(snapshot), flint.position());
+  }
+
+  void RestoreOrFork(TextRunnerState& state,
+                     const TextRunnerSnapshot& snapshot) const override {
+    const auto& owned = OwnedSnapshot(snapshot);
+    auto& restored = RequireFlintState(state);
+    std::string error;
+    if (!restored.session().RestoreSnapshot(*owned.snapshot, &error)) {
+      throw std::runtime_error("Flint snapshot restore failed: " + error);
+    }
+    restored.set_position(owned.position);
+  }
+
+  [[nodiscard]] std::size_t PersistentSnapshotPayloadBytes(
+      const TextRunnerSnapshot& snapshot) const override {
+    return OwnedSnapshot(snapshot).PayloadBytes();
+  }
+
+  [[nodiscard]] std::size_t SerializePersistentSnapshot(
+      const TextRunnerSnapshot& snapshot,
+      std::span<std::uint8_t> destination) const override {
+    const auto bytes = OwnedSnapshot(snapshot).snapshot->bytes();
+    if (destination.size() != bytes.size()) {
+      throw std::invalid_argument(
+          "Flint persistent snapshot serialization failed");
+    }
+    std::copy(bytes.begin(), bytes.end(), destination.begin());
+    return destination.size();
+  }
+
+  void StreamPersistentSnapshot(const TextRunnerSnapshot& snapshot,
+                                const SnapshotSink& sink) const override {
+    sink(OwnedSnapshot(snapshot).snapshot->bytes());
+  }
+
+  void RestorePersistentSnapshot(
+      TextRunnerState& state,
+      std::span<const std::uint8_t> payload) const override {
+    auto& restored = RequireFlintState(state);
+    std::string error;
+    if (!restored.session().RestoreSnapshot(payload, &error)) {
+      throw std::runtime_error("Flint persistent snapshot restore failed: " +
+                               error);
+    }
+    const std::uint32_t position = restored.session().Position();
+    if (position == 0 || position > max_context_) {
+      restored.session().Invalidate();
+      restored.set_position(0);
+      throw std::runtime_error(
+          "Flint persistent snapshot restored an invalid position");
+    }
+    restored.set_position(position);
+  }
+
+private:
+  [[nodiscard]] const models::flint::Tokenizer& tokenizer() const {
+    return model_->tokenizer();
+  }
+
+  [[nodiscard]] const FlintTextRunnerSnapshot& OwnedSnapshot(
+      const TextRunnerSnapshot& snapshot) const {
+    const auto* flint = dynamic_cast<const FlintTextRunnerSnapshot*>(&snapshot);
+    if (flint == nullptr || flint->model.get() != model_.get() ||
+        flint->snapshot == nullptr) {
+      throw std::invalid_argument(
+          "Flint snapshot does not belong to this model");
+    }
+    return *flint;
+  }
+
+  std::shared_ptr<models::flint::Model> model_;
+  std::uint32_t max_context_;
+  std::optional<TextRunnerPersistenceDescriptor> persistence_;
+};
+
 #endif
 
 #if defined(ENGINE_ENABLE_HIP)
@@ -2916,21 +3372,29 @@ struct InferenceBackend::Impl {
         : state_(std::move(model_state)),
           request_(std::move(scheduled_request)),
           tool_format_(tool_format) {
-      if (initial == InitialOutputState::kReasoning)
-        reasoning_end_ =
-            state_->scheduler->runner().TokenizeControl("</think>");
+      const auto& runner = state_->scheduler->runner();
+      if (initial != InitialOutputState::kContent)
+        reasoning_end_ = runner.TokenizeControl("</think>");
+      // A model that decides each turn counts only turns it opens itself,
+      // without the opener, as a prompt-opened turn does.
+      if (initial == InitialOutputState::kAuto)
+        reasoning_start_ = runner.TokenizeControl("<think>");
     }
 
     Result Wait(const TokenCallback& on_token,
                 const ProgressCallback& on_progress,
                 const StartCallback& on_start) override {
       auto result = request_.Wait(on_token, on_progress, on_start);
-      if (!reasoning_end_.empty()) {
+      if (!reasoning_end_.empty() &&
+          result.tokens.size() >= reasoning_start_.size() &&
+          std::equal(reasoning_start_.begin(), reasoning_start_.end(),
+                     result.tokens.begin())) {
+        const auto body = result.tokens.begin() +
+                          static_cast<std::ptrdiff_t>(reasoning_start_.size());
         const auto end =
-            std::search(result.tokens.begin(), result.tokens.end(),
-                        reasoning_end_.begin(), reasoning_end_.end());
-        result.reasoning_tokens =
-            static_cast<std::size_t>(end - result.tokens.begin());
+            std::search(body, result.tokens.end(), reasoning_end_.begin(),
+                        reasoning_end_.end());
+        result.reasoning_tokens = static_cast<std::size_t>(end - body);
       }
       return result;
     }
@@ -2946,6 +3410,7 @@ struct InferenceBackend::Impl {
     std::shared_ptr<const State> state_;
     TextGenerationScheduler::Request request_;
     std::vector<tokenization::TokenId> reasoning_end_;
+    std::vector<tokenization::TokenId> reasoning_start_;
     const std::optional<sampling::JsonConstraint::ToolFormat> tool_format_;
   };
 
@@ -3187,6 +3652,37 @@ bool InferenceBackend::load(const std::string& model_path, std::string* error,
             "Qwen3.8-Flash-Next MTP", speculative_config.draft_model_path,
             &resolved_disk_cache_config.draft_model_artifact_fingerprint,
             error)) {
+      return false;
+    }
+    return load(std::move(model), error, max_context, session_count,
+                prefill_policy, scheduler_policy, speculative_config,
+                std::move(resolved_disk_cache_config), ram_cache_config);
+  }
+  if (architecture == "flint") {
+    if (!vision_model_path.empty()) {
+      SetError(error, "Flint does not support --mmproj");
+      return false;
+    }
+    if (speculative_config.backend != TextSpeculativeBackend::kDisabled) {
+      SetError(error, "Flint supports only --speculative off");
+      return false;
+    }
+    if (!models::flint::ValidateGgufTemplate(*reader, &load_error)) {
+      SetError(error, "Unsupported Flint chat template: " + load_error);
+      return false;
+    }
+    auto model = models::flint::Model::Load(
+        model_path, models::flint::ModelOptions{.max_context = max_context},
+        &load_error);
+    if (model == nullptr) {
+      SetError(error, "Failed to create Flint model: " + load_error);
+      return false;
+    }
+    if (DiskCacheEnabled(resolved_disk_cache_config) &&
+        resolved_disk_cache_config.model_artifact_fingerprint.empty() &&
+        !FingerprintArtifact(
+            "Flint", *reader,
+            &resolved_disk_cache_config.model_artifact_fingerprint, error)) {
       return false;
     }
     return load(std::move(model), error, max_context, session_count,
@@ -3558,6 +4054,71 @@ bool InferenceBackend::load(
     return false;
   }
 }
+
+bool InferenceBackend::load(std::shared_ptr<models::flint::Model> model,
+                            std::string* error, std::uint32_t max_context,
+                            std::size_t session_count,
+                            TextPrefillPolicy prefill_policy,
+                            TextSchedulerPolicy scheduler_policy,
+                            TextSpeculativeConfig speculative_config,
+                            TextDiskCacheConfig disk_cache_config,
+                            TextRunnerRamCacheOptions ram_cache_config) {
+  if (model == nullptr) {
+    SetError(error, "Flint model must not be null");
+    return false;
+  }
+  if (max_context == 0)
+    max_context = model->MaxContext();
+  if (session_count == 0) {
+    SetError(error, "HTTP session count must be at least one");
+    return false;
+  }
+  if (max_context > model->MaxContext()) {
+    SetError(error, "HTTP context exceeds the loaded Flint model context");
+    return false;
+  }
+  if (speculative_config.backend != TextSpeculativeBackend::kDisabled) {
+    SetError(error, "Flint supports only --speculative off");
+    return false;
+  }
+  if (DiskCacheEnabled(disk_cache_config) &&
+      (!IsSha256Hex(disk_cache_config.model_artifact_fingerprint) ||
+       disk_cache_config.capacity_bytes == 0)) {
+    SetError(error, "Flint persistent disk cache configuration is invalid");
+    return false;
+  }
+  try {
+    auto new_state = std::make_shared<Impl::State>();
+    new_state->sampling_defaults.model = sampling::TextModelPreset::kFlint;
+    new_state->sampling_defaults.supplied = {};
+    auto runner = std::make_shared<FlintTextRunner>(
+        std::move(model), max_context,
+        disk_cache_config.model_artifact_fingerprint);
+    new_state->model_id = runner->Descriptor().model_id;
+    new_state->max_context = max_context;
+    std::optional<TextRunnerDiskCacheOptions> runner_disk_cache;
+    if (DiskCacheEnabled(disk_cache_config)) {
+      runner_disk_cache = TextRunnerDiskCacheOptions{
+          .directory = std::move(disk_cache_config.directory),
+          .capacity_bytes = disk_cache_config.capacity_bytes,
+          .staging_capacity_bytes = disk_cache_config.staging_capacity_bytes,
+      };
+    }
+    auto runner_pool = std::make_shared<TextRunnerPool>(
+        std::move(runner), session_count, std::move(runner_disk_cache),
+        ram_cache_config);
+    new_state->scheduler = std::make_shared<TextGenerationScheduler>(
+        std::move(runner_pool), prefill_policy, scheduler_policy);
+    {
+      const std::lock_guard<std::mutex> lock(impl_->state_mutex);
+      impl_->state = std::move(new_state);
+    }
+    return true;
+  } catch (const std::exception& exception) {
+    SetError(error, exception.what());
+    return false;
+  }
+}
 #endif
 
 std::string InferenceBackend::model_id() const {
@@ -3785,10 +4346,13 @@ InferenceBackend::Result InferenceBackend::chat(
   const auto initial =
       state->scheduler->runner().InitialOutputState(effective_request);
   if (request.reasoning.budget_tokens &&
-      initial == TextGenerationBackend::InitialOutputState::kReasoning)
+      initial != TextGenerationBackend::InitialOutputState::kContent)
     effective_sampling.reasoning_budget =
         state->scheduler->runner().BuildReasoningBudget(
-            *request.reasoning.budget_tokens, prompt->tokens);
+            *request.reasoning.budget_tokens,
+            initial == TextGenerationBackend::InitialOutputState::kReasoning
+                ? std::span<const TextRunnerToken>(prompt->tokens)
+                : std::span<const TextRunnerToken>{});
   return impl_->GenerateScheduled(
       state, std::move(prompt->tokens), request_start, max_tokens,
       effective_sampling, is_cancelled, on_token, request.client_id,
@@ -3870,10 +4434,13 @@ InferenceBackend::start_chat(const ChatRequest& request, std::size_t max_tokens,
   const auto initial =
       state->scheduler->runner().InitialOutputState(effective_request);
   if (request.reasoning.budget_tokens &&
-      initial == TextGenerationBackend::InitialOutputState::kReasoning)
+      initial != TextGenerationBackend::InitialOutputState::kContent)
     effective_sampling.reasoning_budget =
         state->scheduler->runner().BuildReasoningBudget(
-            *request.reasoning.budget_tokens, prompt->tokens);
+            *request.reasoning.budget_tokens,
+            initial == TextGenerationBackend::InitialOutputState::kReasoning
+                ? std::span<const TextRunnerToken>(prompt->tokens)
+                : std::span<const TextRunnerToken>{});
   const std::string client_id =
       request.client_id.empty() ? "anonymous" : request.client_id;
   auto scheduled_request = state->scheduler->Submit(

@@ -9,6 +9,8 @@ required. The message then stays put, so the following turn must reuse it all.
 from copy import deepcopy
 import sys
 
+from thinking_off import keep_reasoning
+
 
 def history(label):
     # A long conversation body after a short system prompt, as in agent
@@ -27,8 +29,12 @@ REMINDER = ("Reminder: the status word changed. From now on, whenever the user "
 QUESTION = "Reply with only the status word."
 
 
-def check_system_injection(client, model, checks, chat_result):
+def check_system_injection(client, model, checks, chat_result, sampling_preset=None):
     failures = []
+    # A Flint answer at budget 0 can continue its reasoning as content, so
+    # Flint keeps its reasoning and gets room for it; answers stay exact.
+    keep = keep_reasoning(sampling_preset)
+    limit = 1024 if keep else 16
 
     def record(name, result):
         checks[name] = result
@@ -64,8 +70,8 @@ def check_system_injection(client, model, checks, chat_result):
     for role in ("system", "developer"):
         label = f"system_injection_chat_{role}"
         request = dict(model=model, messages=history(label), temperature=0, seed=37,
-                       max_completion_tokens=16, extra_body={
-                           "chat_template_kwargs": {"enable_thinking": False}})
+                       max_completion_tokens=limit, extra_body={
+                           "chat_template_kwargs": {"enable_thinking": False}, **keep})
         first = record(label + "_first", chat_result(client, request))
         first_total, _, _ = chat_work(first)
         assert first_total >= 1024 and first["text"].strip() == "ALPHA", first
@@ -97,8 +103,8 @@ def check_system_injection(client, model, checks, chat_result):
     # an already-served request.
     label = "system_injection_chat_before_last_user"
     request = dict(model=model, messages=history(label), temperature=0, seed=37,
-                   max_completion_tokens=16, extra_body={
-                       "chat_template_kwargs": {"enable_thinking": False}})
+                   max_completion_tokens=limit, extra_body={
+                       "chat_template_kwargs": {"enable_thinking": False}, **keep})
     first_total = chat_work(record(label + "_first", chat_result(client, request)))[0]
     request["messages"][-1:-1] = [{"role": "system", "content": REMINDER}]
     request["messages"][-1]["content"] = QUESTION
@@ -110,8 +116,8 @@ def check_system_injection(client, model, checks, chat_result):
     label = "system_injection_responses"
     messages = history(label)
     request = dict(model=model, instructions=messages[0]["content"], input=messages[1:],
-                   temperature=0, max_output_tokens=16, reasoning={"effort": "none"},
-                   store=False)
+                   temperature=0, max_output_tokens=limit, reasoning={"effort": "none"},
+                   store=False, **({"extra_body": keep} if keep else {}))
     first = client.responses.create(**request)
     record(label + "_first", first.to_dict())
     assert first.status == "completed" and first.output_text.strip() == "ALPHA", first

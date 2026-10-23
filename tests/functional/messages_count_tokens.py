@@ -136,7 +136,7 @@ def check_messages_count_tokens(client, model, checks, context):
 
 
 def check_messages_image_counts(client, model, checks, context, image_content,
-                                input_modalities):
+                                input_modalities, sampling_preset=None):
     """Image counts must agree with generation and with model capabilities."""
     import openai
     from discovery import assert_model_listing
@@ -191,8 +191,12 @@ def check_messages_image_counts(client, model, checks, context, image_content,
         record(label, response)
         assert_prompt_count(expected, response["usage"])
         assert response["finish"] == "end_turn", response
-        assert all(block["type"] == "text" for block in response["blocks"]), response
-        text = "".join(block["text"] for block in response["blocks"])
+        # Messages cannot set a zero reasoning budget, and Flint ignores
+        # disabled thinking: its shortest form is a one-token thinking block.
+        kinds = [block["type"] for block in response["blocks"]]
+        assert kinds == ["text"] or (sampling_preset == "flint" and kinds == ["thinking", "text"]), \
+            response
+        text = "".join(block["text"] for block in response["blocks"] if block["type"] == "text")
         assert text.strip().lower().rstrip(".!") == color, response
         return response
 
@@ -245,6 +249,7 @@ def check_messages_image_counts(client, model, checks, context, image_content,
         reject("corrupt_generation", "/messages", corrupt)
 
     recovery = {"model": model, "max_tokens": 16, "temperature": 0,
-                "thinking": {"type": "disabled"},
+                "thinking": ({"type": "enabled", "budget_tokens": 1} if sampling_preset == "flint"
+                             else {"type": "disabled"}),
                 "messages": [{"role": "user", "content": "Reply with only BETA."}]}
     generate("text_recovery_generated", recovery, count("text_recovery", recovery), "beta")

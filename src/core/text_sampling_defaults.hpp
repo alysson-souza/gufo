@@ -8,7 +8,7 @@
 
 namespace gufo::sampling {
 
-enum class TextModelPreset { kUnspecified, kQwen38, kDeepSeekV4Flash };
+enum class TextModelPreset { kUnspecified, kQwen38, kDeepSeekV4Flash, kFlint };
 
 // Presence is independent of value: an explicit zero must override a preset.
 struct SamplingOverrides {
@@ -57,6 +57,9 @@ inline SamplingConfig ResolveTextSampling(TextModelPreset model,
       result.presence_penalty = 1.5F;
     }
   }
+  // Flint's generation_config.json; its template has no thinking switch.
+  if (model == TextModelPreset::kFlint)
+    result.top_k = 20;
   if (supplied.temperature)
     result.temperature = configured.temperature;
   if (supplied.top_k)

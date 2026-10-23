@@ -256,9 +256,25 @@ only affected suites. Reuse matching baseline evidence; do not repeat the whole
 correctness matrix on main. A baseline must match the revision, harness,
 toolchain, weights, settings and preceding cache history.
 
-Use `deepseek4` for DeepSeek. Pass the model's normal speculative options for
-DFlash2, MTP or DSpark. Server sampling arguments become the expected defaults;
-`--mmproj` enables image cases. Keep informational server logging enabled.
+Use `deepseek4` for DeepSeek and `flint` for Recursive Flint. Pass the model's
+normal speculative options for DFlash2, MTP or DSpark. Server sampling arguments
+become the expected defaults; `--mmproj` enables image cases. Keep informational
+server logging enabled.
+
+Flint has no thinking switch: it opens `<think>` on every turn and ignores
+effort and `enable_thinking`, so `--sampling-preset flint` expects one preset
+(temperature 1.0, top-p 0.95, top-k 20) under every effort. Its only cap is a
+reasoning budget: Chat and Responses requests that turn thinking off are sent
+with `reasoning_budget_tokens: 0` (`thinking_off.py`). After that forced
+`</think>` Flint may continue reasoning as content, so checks that need an
+exact short answer or a tool call keep its reasoning instead and allow room for
+it. Messages has no zero budget, so Flint's Messages checks use a one-token
+thinking budget or keep its reasoning. A budget-0 turn replays without its
+empty `<think></think>`, so checks of generated-frontier reuse keep Flint's
+reasoning and echo it back. Non-strict tools keep only the call format on
+Flint, so checks of argument enforcement use strict tools or assert the call
+shape. Arguments are expected as Flint's reference parser types them
+(`flint_typed` in `tool_native.py`).
 
 Each invocation tests **one model and one mode**. Model-specific changes need
 only the affected target/modes. For shared text changes, run the affected suites
@@ -276,6 +292,7 @@ or timing margins; retain the original timeout failure when investigating it.
 | Qwen27B Q8_K_XL | `off`, `dflash2` | `--dflash-model` |
 | Flash-Next Q4_K_XL | `off`, `mtp` | `--mtp-model` |
 | DeepSeek Flash 0731 | `off`, `dspark` | `--dspark-model` |
+| Recursive Flint | `off` | none |
 
 Keep the sidecar path in the `off` command to test the explicit override.
 `report.json` checks the loaded mode and records observed draft counts; `off`
@@ -305,7 +322,7 @@ RAM, disk and restart settings once their contracts pass.
 | `image-count` | 17+ images in one message and across turns; Chat/Responses, sampled thinking/JSON, concurrent colors, limits, cancellation and RAM/disk replay |
 | `tools` | Required/named/auto, schemas, literal arguments and tool history |
 | `auto-tools` | Focused subset for optional tool calls |
-| `tool-edges` | Referenced argument types, literal CR, unusual keys, named Responses metadata, foreign tool markers in prose and parallel calls (no DeepSeek text after the call block) |
+| `tool-edges` | Referenced argument types, literal CR, unusual keys, named Responses metadata, foreign tool markers in prose and parallel calls (no DeepSeek or Flint text after the calls) |
 | `tool-reasoning` | Quoted tags, exact literal arguments, early stops, disabled tools, envelope framing, completed tool-result continuations and warm replay of contaminated history; Chat/Responses |
 | `tool-streaming` | Incremental argument arrival and exact assembly in Chat/Responses/Messages; stable IDs, literal framing, thinking, stopped/limited calls and successful retries |
 | `reasoning-separator` | No leading separator newlines after reasoning in Chat/Responses, plain/tools/JSON; exact streamed/buffered text, warm retry, continuation and thinking-off paragraph breaks |

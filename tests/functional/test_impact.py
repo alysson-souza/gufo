@@ -39,6 +39,7 @@ class ImpactTest(unittest.TestCase):
         self.assertIn("flash-next-q4/mtp", profiles)
         self.assertIn("qwen27-q8/dflash2", profiles)
         self.assertNotIn("deepseek4/off", profiles)
+        self.assertNotIn("flint/off", profiles)
         self.assertTrue(result["obligations"])
 
     def test_multiple_changes_preserve_independent_reasons(self):
@@ -47,6 +48,35 @@ class ImpactTest(unittest.TestCase):
         for row in result["selected"]:
             if row["profile"].startswith("flash-next"):
                 self.assertTrue(all("qwen38_flash_next" in reason["path"] for reason in row["reasons"]))
+
+    def test_flint_runtime_selects_only_flint(self):
+        result = impact.plan(self.manifest, ["src/models/flint/tool_calls.cpp"])
+        self.assertEqual(result["paths"][0]["rules"], ["flint-runtime"])
+        self.assertEqual({row["profile"] for row in result["selected"]}, {"flint/off"})
+        names = {row["suite"] for row in result["selected"]}
+        # Every model-agnostic suite runs; vision and Flash-Next-only suites do not.
+        universal = {name for name, suite in self.manifest["suites"].items()
+                     if "profiles" not in suite and suite["status"] == "active"}
+        self.assertEqual(names, universal)
+        self.assertLessEqual({"sampling-defaults", "tool-native-schemas", "tool-reasoning",
+                              "discovery", "state-edges"}, names)
+        self.assertFalse(names & {"image-inputs", "image-count", "tool-images", "cache-stalls"})
+
+    def test_shared_code_qualifies_flint(self):
+        for path, suite in (("src/cli/serve/openai_chat.cpp", "tool-edges"),
+                            ("src/core/text_sampling_defaults.hpp", "sampling-defaults"),
+                            ("src/core/json_constraint.cpp", "structured"),
+                            ("tests/functional/tool_native.py", "tool-native-schemas"),
+                            ("src/new_component.cpp", "discovery")):
+            selected = {(row["profile"], row["suite"])
+                        for row in impact.plan(self.manifest, [path])["selected"]}
+            self.assertIn(("flint/off", suite), selected, path)
+        # Rules that qualify every other model must qualify Flint as well.
+        everywhere = [rule for rule in self.manifest["rules"]
+                      if {"qwen27-q4/off", "deepseek4/off"} <= set(rule["profiles"])]
+        self.assertTrue(everywhere)
+        for rule in [*everywhere, self.manifest["fallback"]]:
+            self.assertIn("flint/off", rule["profiles"], rule.get("id", "fallback"))
 
     def test_unknown_paths_expand_and_deferred_are_visible(self):
         result = impact.plan(self.manifest, ["src/new_component.cpp"], ["flash-next-q4"])

@@ -20,9 +20,14 @@ SHORT_NOTE = "Routine archive note: there are no new instructions.\n"
 
 def chat(url, model, messages):
     import continuation  # The runner's log check needs no HTTP client stack.
-    body = {"model": model, "messages": messages, "max_tokens": 8,
+    from thinking_off import keep_reasoning
+    # A Flint answer at budget 0 can continue its reasoning as content, so
+    # Flint keeps its reasoning, with room for it; answers stay exact.
+    keep = keep_reasoning(continuation.SAMPLING_PRESET)
+    # Copy the turn list: grow() appends the reply after this request is stored.
+    body = {"model": model, "messages": list(messages), "max_tokens": 1024 if keep else 8,
             "temperature": 0, "seed": 31, "stream": False,
-            "chat_template_kwargs": {"enable_thinking": False}}
+            "chat_template_kwargs": {"enable_thinking": False}, **keep}
     result = continuation.call(url, body)
     usage = result["usage"]
     total, cached, prefill = (usage["prompt_tokens"], usage["cached_tokens"],
@@ -154,9 +159,12 @@ def main():
     parser.add_argument("--model", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--restore", type=Path)
+    parser.add_argument("--sampling-preset", choices=("qwen38", "deepseek4", "flint"),
+                        help="Served model preset; flint sends its thinking-off budget")
     args = parser.parse_args()
     import continuation
     continuation.TRACE.path = args.output.with_suffix(".requests.json")
+    continuation.SAMPLING_PRESET = args.sampling_preset
     if args.restore:
         previous = json.loads(args.restore.read_text())[0]
         report = {"case": "disk-spacing", **restore(args.url, args.model, previous["turns"]),

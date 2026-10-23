@@ -28,6 +28,8 @@
 #include <hip/hip_runtime.h>
 
 #include "src/core/speculative/speculative_verifier.hpp"
+#include "src/models/flint/chat_template.hpp"
+#include "src/models/flint/engine.hpp"
 #include "src/models/qwen/hip/dflash.hpp"
 #include "src/models/qwen/hip/executor.hpp"
 #include "src/models/qwen/hip/mtp.hpp"
@@ -250,6 +252,10 @@ bool IsDeepSeekV4Flash(const core::GgufReader& reader) {
   return reader.GetMetadataString("general.architecture") == "deepseek4";
 }
 
+bool IsFlint(const core::GgufReader& reader) {
+  return reader.GetMetadataString("general.architecture") == "flint";
+}
+
 std::optional<ReasoningEffort> ParseReasoningEffort(std::string_view value) {
   if (value == "minimal") {
     return ReasoningEffort::kMinimal;
@@ -299,6 +305,8 @@ void ResolvePromptSampling(const core::GgufReader& reader, PromptOptions* opt) {
     preset = sampling::TextModelPreset::kDeepSeekV4Flash;
   } else if (artifact_architecture == "qwen4exp") {
     preset = sampling::TextModelPreset::kQwen38;
+  } else if (artifact_architecture == "flint") {
+    preset = sampling::TextModelPreset::kFlint;
   } else if (const auto config = reader.ExtractModelConfig()) {
     preset = sampling::TextPreset(*config);
   }
@@ -738,6 +746,187 @@ int GenerateFlashNextResponse(const PromptOptions& opt,
   return 0;
 }
 
+std::shared_ptr<models::flint::Model> LoadFlintModel(
+    const PromptOptions& opt, const core::GgufReader& reader,
+    std::chrono::steady_clock::time_point load_start) {
+  if (opt.force_cpu || !opt.speculative_backend.empty()) {
+    std::cerr << "Flint requires ROCm and supports only --speculative off\n";
+    PrintModelLoadTime(load_start, false);
+    return nullptr;
+  }
+  std::string error;
+  if (!models::flint::ValidateGgufTemplate(reader, &error)) {
+    std::cerr << "Unsupported Flint chat template: " << error << '\n';
+    PrintModelLoadTime(load_start, false);
+    return nullptr;
+  }
+  auto model = models::flint::Model::Load(
+      opt.model_path, {.max_context = kDefaultContext}, &error);
+  PrintModelLoadTime(load_start, model != nullptr);
+  if (!model)
+    std::cerr << "Flint load failed: " << error << '\n';
+  return model;
+}
+
+// Extends `held`, the tokens the session has evaluated, to `prompt` and
+// generates the reply. A prompt that does not continue `held` restarts the
+// session; the emitted tokens stay evaluated so the next turn can extend them.
+int GenerateFlintResponse(const PromptOptions& opt,
+                          const models::flint::Model& model,
+                          models::flint::Session& session,
+                          std::span<const std::uint32_t> prompt,
+                          std::vector<std::uint32_t>& held,
+                          std::string* reply = nullptr) {
+  if (prompt.empty() || prompt.size() >= session.ContextSize() ||
+      opt.max_tokens > session.ContextSize() - prompt.size()) {
+    std::cerr << "Flint prompt and output exceed the 4096-token CLI context\n";
+    return 1;
+  }
+  if (held.size() > prompt.size() ||
+      !std::equal(held.begin(), held.end(), prompt.begin())) {
+    session.Invalidate();
+    held.clear();
+  }
+  std::string error;
+  while (session.Position() < prompt.size()) {
+    if (session.PrefillCapacity() == 0) {
+      std::cerr << "Flint session has no prefill capacity\n";
+      return 1;
+    }
+    const std::size_t next = std::min<std::size_t>(
+        prompt.size(), static_cast<std::size_t>(session.Position()) +
+                           session.PrefillCapacity());
+    if (!session.Sync(prompt.first(next), &error)) {
+      std::cerr << "Flint prefill failed: " << error << '\n';
+      session.Invalidate();
+      held.clear();
+      return 1;
+    }
+  }
+  held.assign(prompt.begin(), prompt.end());
+
+  if (opt.verbose) {
+    std::cout << "[Engine]: Flint ROCm (gfx1151)\n"
+              << "Model: " << model.ModelName() << '\n'
+              << "Prompt tokens: " << prompt.size() << '\n'
+              << "Max tokens: " << opt.max_tokens << '\n'
+              << "--- Generation Output ---\n";
+  }
+  const auto& tokenizer = model.tokenizer();
+  sampling::SamplerState sampler(opt.sampling, prompt);
+  std::vector<tokenization::TokenId> generated;
+  const auto start = std::chrono::steady_clock::now();
+  while (generated.size() < opt.max_tokens) {
+    const auto token = sampler.Sample(session.Logits());
+    if (tokenizer.IsEndOfGeneration(token))
+      break;
+    sampler.Accept(token);
+    const auto piece = tokenizer.TokenBytes(token);
+    std::cout << piece << std::flush;
+    if (reply)
+      reply->append(piece);
+    generated.push_back(token);
+    // A chat session keeps the complete emitted prefix for the next turn.
+    if (reply != nullptr || generated.size() < opt.max_tokens) {
+      if (!session.Evaluate(token, &error)) {
+        std::cerr << "\nFlint decode failed: " << error << '\n';
+        session.Invalidate();
+        held.clear();
+        return 1;
+      }
+      held.push_back(token);
+    }
+  }
+  std::cout << '\n';
+  if (opt.verbose) {
+    const double seconds =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start)
+            .count();
+    std::cerr << "Generated " << generated.size() << " tokens ("
+              << generated.size() / seconds << " tok/s)\n";
+    PrintTokenTrace(generated);
+  }
+  return 0;
+}
+
+std::vector<tokenization::ChatMessage> FlintPromptMessages(
+    const PromptOptions& opt) {
+  std::vector<tokenization::ChatMessage> messages;
+  if (!opt.system_prompt.empty())
+    messages.emplace_back(tokenization::ChatRole::kSystem, opt.system_prompt);
+  messages.emplace_back(tokenization::ChatRole::kUser, opt.prompt_text);
+  return messages;
+}
+
+int RunFlintPrompt(const PromptOptions& opt, const core::GgufReader& reader,
+                   std::chrono::steady_clock::time_point load_start) {
+  auto model = LoadFlintModel(opt, reader, load_start);
+  if (!model)
+    return 1;
+  std::string error;
+  auto session = model->CreateSession(kDefaultContext, &error);
+  if (!session) {
+    std::cerr << "Flint session creation failed: " << error << '\n';
+    return 1;
+  }
+  const auto prompt = opt.use_chat_template
+                          ? model->EncodeChat(FlintPromptMessages(opt), {})
+                          : model->tokenizer().Encode(opt.prompt_text, false);
+  std::vector<std::uint32_t> held;
+  return GenerateFlintResponse(opt, *model, *session, prompt, held);
+}
+
+int RunFlintChat(const PromptOptions& opt, const core::GgufReader& reader,
+                 std::chrono::steady_clock::time_point load_start) {
+  if (!opt.use_chat_template) {
+    std::cerr << "Flint interactive chat requires chat framing; use prompt "
+                 "--raw for raw text\n";
+    return 1;
+  }
+  auto model = LoadFlintModel(opt, reader, load_start);
+  if (!model)
+    return 1;
+  std::string error;
+  auto session = model->CreateSession(kDefaultContext, &error);
+  if (!session) {
+    std::cerr << "Flint session creation failed: " << error << '\n';
+    return 1;
+  }
+  std::vector<tokenization::ChatMessage> history;
+  if (!opt.system_prompt.empty())
+    history.emplace_back(tokenization::ChatRole::kSystem, opt.system_prompt);
+  std::vector<std::uint32_t> held;
+  std::cout << "=== Gufo Interactive Chat (Flint) ===\n"
+            << "Type 'exit' or Ctrl+D to quit.\n\n";
+  for (std::string input;;) {
+    std::cout << ">>> User: " << std::flush;
+    if (!std::getline(std::cin, input) || input == "exit" || input == "quit")
+      break;
+    if (input.empty())
+      continue;
+    history.emplace_back(tokenization::ChatRole::kUser, input);
+    const auto prompt = model->EncodeChat(history, {});
+    std::cout << "<<< Assistant: ";
+    std::string reply;
+    if (GenerateFlintResponse(opt, *model, *session, prompt, held, &reply) != 0)
+      return 1;
+    // Flint opens reasoning itself; keep it as the turn's thought.
+    tokenization::ChatMessage response(tokenization::ChatRole::kAssistant, "");
+    constexpr std::string_view kStart = "<think>";
+    constexpr std::string_view kEnd = "</think>";
+    const auto end = reply.find(kEnd);
+    if (reply.starts_with(kStart) && end != std::string::npos) {
+      response.thought = reply.substr(kStart.size(), end - kStart.size());
+      response.content = reply.substr(end + kEnd.size());
+    } else {
+      response.content = std::move(reply);
+    }
+    history.push_back(std::move(response));
+    std::cout << '\n';
+  }
+  return 0;
+}
+
 std::unique_ptr<speculative::SpeculativeVerifier> CreateQwenVerifier(
     const PromptOptions& opt, hip::QwenGpuExecutor& executor) {
   std::string err;
@@ -1014,9 +1203,21 @@ int RunPrompt(std::span<const char* const> args) {
     }
     return RunDeepSeekPrompt(opt, *reader, model_load_start);
   }
+  if (IsFlint(*reader)) {
+    if (!opt.image_paths.empty() || !opt.vision_model_path.empty()) {
+      std::cerr << "Flint does not support image input\n";
+      return 2;
+    }
+    return RunFlintPrompt(opt, *reader, model_load_start);
+  }
 #else
   if (IsDeepSeekV4Flash(*reader)) {
     std::cerr << "DeepSeek V4 Flash requires ENGINE_ENABLE_HIP=ON\n";
+    PrintModelLoadTime(model_load_start, false);
+    return 1;
+  }
+  if (IsFlint(*reader)) {
+    std::cerr << "Flint requires ENGINE_ENABLE_HIP=ON\n";
     PrintModelLoadTime(model_load_start, false);
     return 1;
   }
@@ -1237,9 +1438,20 @@ int RunChat(std::span<const char* const> args) {
     }
     return RunDeepSeekChat(opt, *reader, model_load_start);
   }
+  if (IsFlint(*reader)) {
+    if (!opt.image_paths.empty() || !opt.vision_model_path.empty()) {
+      std::cerr << "Flint does not support image input\n";
+      return 2;
+    }
+    return RunFlintChat(opt, *reader, model_load_start);
+  }
 #else
   if (IsDeepSeekV4Flash(*reader)) {
     std::cerr << "DeepSeek V4 Flash requires ENGINE_ENABLE_HIP=ON\n";
+    return 1;
+  }
+  if (IsFlint(*reader)) {
+    std::cerr << "Flint requires ENGINE_ENABLE_HIP=ON\n";
     return 1;
   }
 #endif

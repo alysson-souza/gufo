@@ -84,6 +84,8 @@ std::optional<ChatRequest> ConstrainChatRequest(
   if (runner.InitialOutputState(request) ==
       TextGenerationBackend::InitialOutputState::kReasoning)
     grammar = sampling::JsonConstraint::WithReasoning(grammar);
+  else if (runner.ToolFormat() == sampling::JsonConstraint::ToolFormat::kFlint)
+    grammar = sampling::JsonConstraint::WithOptionalReasoning(grammar);
   sampling->constraint = runner.BindConstraint(grammar);
   return constrained;
 }
@@ -769,6 +771,8 @@ TextModelRunner::BuildReasoningBudget(
       std::ranges::find(prompt.rbegin(), prompt.rend(), start.front());
   if (opened != prompt.rend())
     budget->prompt.assign(opened.base(), prompt.end());
+  else
+    budget->start = start.front();
   const std::lock_guard lock(constraint_mutex_);
   if (!partial_utf8_ && VocabularySize() != 0) {
     auto partial = std::make_shared<std::vector<bool>>(VocabularySize());

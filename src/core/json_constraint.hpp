@@ -22,7 +22,11 @@ namespace gufo::sampling {
 // verification.
 class JsonConstraint {
 public:
-  enum class ToolFormat { kJson, kQwen, kDeepSeek };
+  // kFlint: `<tool_call>NAME<arg_key>K</arg_key><arg_value>V</arg_value>...
+  // </tool_call>`. Strict tools take their declared parameters in order
+  // (string values raw, others JSON per schema); other tools keep only the
+  // call format, as Flint's reference SGLang grammar defines them.
+  enum class ToolFormat { kJson, kQwen, kDeepSeek, kFlint };
   struct Stack {
     std::vector<std::uint32_t> symbols;
     std::string lexeme;
@@ -57,6 +61,11 @@ public:
   static std::shared_ptr<const JsonConstraint> OpenToolParameters(
       ToolFormat format);
   static std::shared_ptr<const JsonConstraint> WithReasoning(
+      std::shared_ptr<const JsonConstraint> answer);
+  // Flint decides on each turn whether to reason: an optional leading
+  // `<think>...</think>` (its body excluding `</think>` and the turn-end
+  // markers) precedes `answer`.
+  static std::shared_ptr<const JsonConstraint> WithOptionalReasoning(
       std::shared_ptr<const JsonConstraint> answer);
   using Tool = std::pair<std::string, std::shared_ptr<const JsonConstraint>>;
   static std::shared_ptr<const JsonConstraint> WithTools(

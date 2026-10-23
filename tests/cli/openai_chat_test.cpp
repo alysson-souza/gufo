@@ -1616,6 +1616,16 @@ void TestModelSamplingDefaults() {
                config.repeat_penalty == 1.0F,
            "DeepSeek agentic defaults do not depend on reasoning");
   }
+  // Flint's preset has no thinking-off variant: its template has no switch.
+  backend.defaults.model = TextModelPreset::kFlint;
+  for (const bool thinking : {false, true}) {
+    backend.reasoning_defaults_value.enabled = thinking;
+    config = send(R"(,"chat_template_kwargs":{"enable_thinking":false})");
+    Expect(config.temperature == 1.0F && config.top_p == 0.95F &&
+               config.top_k == 20 && config.min_p == 0.0F &&
+               config.presence_penalty == 0.0F,
+           "Flint defaults do not depend on reasoning");
+  }
   backend.defaults.supplied = gufo::sampling::SamplingOverrides::All();
   config = send("");
   Expect(config.constraint == backend.defaults.sampling.constraint,
@@ -6270,6 +6280,146 @@ void TestParallelCallSeparatorIsNotContent() {
     }
 }
 
+struct FlintTurn {
+  std::string content;
+  std::string reasoning;
+  std::vector<std::pair<std::string, std::string>> calls;  // name, arguments
+};
+
+// One Flint turn through the Chat Completions parser, buffered or streamed.
+FlintTurn FlintChat(const std::string& raw, bool stream, bool parallel = true) {
+  auto body = gufo::json::parse(R"({
+    "model":"test-model","messages":[{"role":"user","content":"go"}],
+    "tool_choice":"auto",
+    "tools":[{"type":"function","function":{"name":"get_weather",
+      "parameters":{"type":"object","properties":{
+        "city":{"type":"string"},"days":{"type":"integer"},
+        "units":{"type":["string","null"]},
+        "tags":{"type":"array","items":{"type":"string"}},
+        "label":{"enum":["a","b"]}},"required":["city"]}}},
+     {"type":"function","function":{"name":"note",
+      "parameters":{"type":"object","properties":{}}}}]})");
+  body["stream"] = stream;
+  body["parallel_tool_calls"] = parallel;
+  FakeBackend backend;
+  backend.tool_format = gufo::sampling::JsonConstraint::ToolFormat::kFlint;
+  backend.initial_output_state_override =
+      gufo::server::TextGenerationBackend::InitialOutputState::kAuto;
+  // Split every byte so markers and values cross piece boundaries.
+  for (const char byte : raw)
+    backend.pieces.emplace_back(1, byte);
+  const auto response =
+      gufo::server::HandleOpenAiChat(Request(body.dump()), backend);
+  FlintTurn turn;
+  if (!stream) {
+    const auto parsed = gufo::json::parse(response.body);
+    const auto& message = *parsed.find("choices")->items()[0].find("message");
+    turn.content = message.member_str("content");
+    turn.reasoning = message.member_str("reasoning_content");
+    if (const auto* calls = message.find("tool_calls"))
+      for (const auto& call : calls->items())
+        turn.calls.emplace_back(call.find("function")->member_str("name"),
+                                call.find("function")->member_str("arguments"));
+    return turn;
+  }
+  response.streaming_body([&](std::string_view chunk) {
+    if (chunk == "data: [DONE]\n\n")
+      return true;
+    const auto event = gufo::json::parse(chunk.substr(6));
+    for (const auto& choice : event.find("choices")->items()) {
+      const auto* delta = choice.find("delta");
+      if (!delta)
+        continue;
+      turn.content += delta->member_str("content");
+      turn.reasoning += delta->member_str("reasoning_content");
+      if (const auto* calls = delta->find("tool_calls"))
+        for (const auto& call : calls->items()) {
+          const auto index = call.member_size("index");
+          if (index >= turn.calls.size())
+            turn.calls.resize(index + 1);
+          const auto* function = call.find("function");
+          turn.calls[index].first += function->member_str("name");
+          turn.calls[index].second += function->member_str("arguments");
+        }
+    }
+    return true;
+  });
+  return turn;
+}
+
+void TestFlintToolCalls() {
+  const auto arg = [](std::string_view key, std::string_view value) {
+    return "<arg_key>" + std::string(key) + "</arg_key><arg_value>" +
+           std::string(value) + "</arg_value>";
+  };
+  // String-typed values stay raw even when they look like JSON; `null` is
+  // null where the schema admits it; other values are JSON; an undeclared
+  // parameter that parses as JSON is JSON (rec_mlx parse_tool_call).
+  const std::string weather =
+      "<tool_call>get_weather" + arg("city", "42 \"Paris\"\n") +
+      arg("days", " 3 ") + arg("units", "null") + arg("tags", R"(["a", "b"])") +
+      arg("label", "a") + arg("extra", "[1]") + "</tool_call>";
+  const auto expected = gufo::json::parse(
+      R"({"city":"42 \"Paris\"\n","days":3,"units":null,"tags":["a","b"],
+          "label":"a","extra":[1]})");
+  const std::string note = "<tool_call>note</tool_call>";
+  for (const bool stream : {false, true}) {
+    const auto plain = FlintChat("Hello <b>there</b>.", stream);
+    Expect(plain.content == "Hello <b>there</b>." && plain.calls.empty() &&
+               plain.reasoning.empty(),
+           "Flint prose without a call is content");
+
+    const auto called = FlintChat("Checking." + weather, stream);
+    Expect(Trimmed(called.content) == "Checking.",
+           "text before a Flint call is content");
+    Expect(called.calls.size() == 1 && called.calls[0].first == "get_weather",
+           "Flint call is structured");
+    Expect(gufo::json::parse(called.calls[0].second).dump() == expected.dump(),
+           "Flint arguments are typed by schema");
+
+    // Flint decides per turn whether to reason. A call written inside the
+    // reasoning stays reasoning.
+    const auto reasoned =
+        FlintChat("<think>Maybe <tool_call>note</tool_call> later.</think>" +
+                      weather + note,
+                  stream);
+    Expect(reasoned.reasoning == "Maybe <tool_call>note</tool_call> later.",
+           "Flint reasoning keeps its literal call");
+    Expect(Trimmed(reasoned.content).empty(),
+           "Flint parallel calls carry no content");
+    Expect(reasoned.calls.size() == 2 &&
+               reasoned.calls[0].first == "get_weather" &&
+               reasoned.calls[1].first == "note" &&
+               gufo::json::parse(reasoned.calls[1].second).dump() == "{}",
+           "Flint parallel calls are both returned");
+
+    const auto answered = FlintChat("<think>Easy.</think>\nFour.", stream);
+    Expect(answered.reasoning == "Easy." && answered.content == "Four." &&
+               answered.calls.empty(),
+           "Flint reasoning then answer");
+
+    const auto quoted = FlintChat("Use `" + note + "` to take notes.", stream);
+    Expect(quoted.calls.empty() &&
+               quoted.content == "Use `" + note + "` to take notes.",
+           "a quoted Flint call is prose");
+  }
+  // Whitespace around the name and between tags is accepted, as by the
+  // reference parser; a conflicting repeated argument rejects the call.
+  const auto spaced = FlintChat(
+      "<tool_call> get_weather\n<arg_key>city</arg_key>\n<arg_value>Oslo"
+      "</arg_value>\n</tool_call>",
+      false);
+  Expect(spaced.calls.size() == 1 &&
+             gufo::json::parse(spaced.calls[0].second).dump() ==
+                 R"({"city":"Oslo"})",
+         "spaced Flint call parses");
+  const auto conflicting =
+      FlintChat("<tool_call>get_weather" + arg("city", "A") + arg("city", "B") +
+                    "</tool_call>",
+                false);
+  Expect(conflicting.calls.empty(), "conflicting Flint arguments are rejected");
+}
+
 int main() {
   TestToolCallRenderParseRoundTrip();
   TestToolTagBoundaries();
@@ -6337,6 +6487,7 @@ int main() {
   TestDeepSeekToolCallsAreStructured();
   TestDeepSeekRepeatedToolParameters();
   TestDeepSeekSchemaCheckedArguments();
+  TestFlintToolCalls();
   TestStreamingStopsAtRejectedParameter();
   TestWrongModelIsRejected();
   TestClientIdentityReachesBackend();

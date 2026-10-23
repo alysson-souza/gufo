@@ -588,6 +588,10 @@ void SamplerState::StartReasoning() {
     return;
   reasoning_remaining_ = budget->tokens;
   reasoning_forced_ = 0;
+  if (budget->start) {
+    reasoning_phase_ = ReasoningPhase::kAwaitingStart;
+    return;
+  }
   reasoning_phase_ = budget->tokens == 0 ? ReasoningPhase::kForcing
                                          : ReasoningPhase::kCounting;
   for (const auto token : budget->prompt)
@@ -601,6 +605,11 @@ void SamplerState::AdvanceReasoning(TokenId token) {
   const auto& budget = *config_.reasoning_budget;
   switch (reasoning_phase_) {
     case ReasoningPhase::kOff:
+      return;
+    case ReasoningPhase::kAwaitingStart:
+      if (token == *budget.start)
+        reasoning_phase_ = budget.tokens == 0 ? ReasoningPhase::kForcing
+                                              : ReasoningPhase::kCounting;
       return;
     case ReasoningPhase::kForcing:
       if (++reasoning_forced_ >= budget.forced.size())

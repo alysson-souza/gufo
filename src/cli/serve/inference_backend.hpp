@@ -22,6 +22,10 @@ namespace gufo::models::deepseek_v4_flash {
 class Model;
 }
 
+namespace gufo::models::flint {
+class Model;
+}
+
 namespace gufo::models::qwen38_flash_next {
 class Model;
 }
@@ -112,6 +116,16 @@ public:
   bool load(std::shared_ptr<models::qwen38_flash_next::Model> model,
             std::string* error, std::uint32_t max_context = 0,
             std::size_t session_count = 1,
+            TextPrefillPolicy prefill_policy = {},
+            TextSchedulerPolicy scheduler_policy = {},
+            TextSpeculativeConfig speculative_config = {},
+            TextDiskCacheConfig disk_cache_config = {},
+            TextRunnerRamCacheOptions ram_cache_config = {});
+
+  /// Installs a previously loaded Flint model with request-owned sessions and
+  /// host-memory continuation snapshots.
+  bool load(std::shared_ptr<models::flint::Model> model, std::string* error,
+            std::uint32_t max_context = 0, std::size_t session_count = 1,
             TextPrefillPolicy prefill_policy = {},
             TextSchedulerPolicy scheduler_policy = {},
             TextSpeculativeConfig speculative_config = {},

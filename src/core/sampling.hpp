@@ -26,6 +26,10 @@ struct ReasoningBudget {
   std::vector<TokenId> forced;
   std::vector<TokenId> ends;
   std::vector<TokenId> prompt;
+  /// Set when the prompt does not open reasoning and the model may open it
+  /// itself: counting starts once `start` is generated, as llama.cpp's
+  /// reasoning-budget sampler does.
+  std::optional<TokenId> start;
   /// Indexed by token: its text ends inside a UTF-8 character.
   std::shared_ptr<const std::vector<bool>> partial_utf8;
 };
@@ -209,6 +213,7 @@ private:
   std::optional<TokenId> pending_sample_;
   enum class ReasoningPhase : std::uint8_t {
     kOff,
+    kAwaitingStart,
     kCounting,
     kWaitingUtf8,
     kForcing,

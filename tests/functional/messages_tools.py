@@ -5,6 +5,8 @@ import sys
 
 import openai
 
+from thinking_off import keep_reasoning
+
 TOOLS = [{
     "name": "get_weather",
     "description": "Return the current weather for one city.",
@@ -67,7 +69,7 @@ def messages_stream(client, body):
             "usage": final["usage"], "types": types}
 
 
-def check_messages_tools(client, model, checks, chat_result):
+def check_messages_tools(client, model, checks, chat_result, sampling_preset=None):
     """A Messages agent turn: a tool_use block, its replay with a tool_result,
     and the same turns streamed. Uncached Chat controls render the same
     prompt, and an unchanged replay reuses the previous prompt."""
@@ -114,9 +116,13 @@ def check_messages_tools(client, model, checks, chat_result):
         (previous_total, answer["usage"])
 
     # Uncached Chat Completions control of the same replayed conversation.
+    # Messages cannot set a zero reasoning budget and Flint ignores disabled
+    # thinking, so its turns reason: the control replays that reasoning and
+    # keeps Flint's reasoning too (thinking_off.py).
     arguments = json.dumps(call["input"])
     chat = [{"role": "system", "content": system}, user,
             {"role": "assistant", "content": first["text"] or None,
+             **({"reasoning_content": first["reasoning"]} if first["reasoning"] else {}),
              "tool_calls": [{"id": call["id"], "type": "function",
                              "function": {"name": call["name"], "arguments": arguments}}]},
             {"role": "tool", "tool_call_id": call["id"], "content": "Sunny, 22 C."}]
@@ -126,7 +132,7 @@ def check_messages_tools(client, model, checks, chat_result):
         tools=[{"type": "function", "function": {
             "name": t["name"], "description": t["description"],
             "parameters": t["input_schema"]}} for t in TOOLS],
-        extra_body={"cache_prompt": False})))
+        extra_body={"cache_prompt": False, **keep_reasoning(sampling_preset)})))
     assert work(cold) == (total, 0, total), (answer, cold)
     assert cold["text"].strip() == answer["text"].strip(), (answer, cold)
 

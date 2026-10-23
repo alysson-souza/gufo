@@ -25,7 +25,8 @@
     "flash-next-q4/off": {"model": "flash-next-q4", "mode": "off", "vision": true},
     "flash-next-q4/mtp": {"model": "flash-next-q4", "mode": "mtp", "vision": true},
     "deepseek4/off": {"model": "deepseek4", "mode": "off", "vision": false},
-    "deepseek4/dspark": {"model": "deepseek4", "mode": "dspark", "vision": false}
+    "deepseek4/dspark": {"model": "deepseek4", "mode": "dspark", "vision": false},
+    "flint/off": {"model": "flint", "mode": "off", "vision": false}
   },
   "suites": {
     "discovery": {"covers": ["discovery"], "uses": [], "status": "active", "configuration": "standard", "vision_required": false},
@@ -117,7 +118,8 @@
         "flash-next-q4/off",
         "flash-next-q4/mtp",
         "deepseek4/off",
-        "deepseek4/dspark"
+        "deepseek4/dspark",
+        "flint/off"
       ],
       "affects": [
         "*"
@@ -142,7 +144,8 @@
         "flash-next-q4/off",
         "flash-next-q4/mtp",
         "deepseek4/off",
-        "deepseek4/dspark"
+        "deepseek4/dspark",
+        "flint/off"
       ],
       "affects": [
         "*"
@@ -171,7 +174,8 @@
         "flash-next-q4/off",
         "flash-next-q4/mtp",
         "deepseek4/off",
-        "deepseek4/dspark"
+        "deepseek4/dspark",
+        "flint/off"
       ],
       "affects": [
         "*"
@@ -224,6 +228,21 @@
       "profiles": [
         "deepseek4/off",
         "deepseek4/dspark"
+      ],
+      "affects": [
+        "*"
+      ],
+      "obligations": [],
+      "ignored": false
+    },
+    {
+      "id": "flint-runtime",
+      "paths": [
+        "src/models/flint/**"
+      ],
+      "priority": 10,
+      "profiles": [
+        "flint/off"
       ],
       "affects": [
         "*"
@@ -331,7 +350,8 @@
         "flash-next-q4/off",
         "flash-next-q4/mtp",
         "deepseek4/off",
-        "deepseek4/dspark"
+        "deepseek4/dspark",
+        "flint/off"
       ],
       "affects": [
         "continuation"
@@ -355,7 +375,8 @@
         "flash-next-q4/off",
         "flash-next-q4/mtp",
         "deepseek4/off",
-        "deepseek4/dspark"
+        "deepseek4/dspark",
+        "flint/off"
       ],
       "affects": [
         "structured",
@@ -381,7 +402,8 @@
         "flash-next-q4/off",
         "flash-next-q4/mtp",
         "deepseek4/off",
-        "deepseek4/dspark"
+        "deepseek4/dspark",
+        "flint/off"
       ],
       "affects": [
         "sampling"
@@ -404,7 +426,8 @@
         "flash-next-q4/off",
         "flash-next-q4/mtp",
         "deepseek4/off",
-        "deepseek4/dspark"
+        "deepseek4/dspark",
+        "flint/off"
       ],
       "affects": [
         "framing",
@@ -444,7 +467,8 @@
       "flash-next-q4/off",
       "flash-next-q4/mtp",
       "deepseek4/off",
-      "deepseek4/dspark"
+      "deepseek4/dspark",
+      "flint/off"
     ],
     "affects": [
       "*"

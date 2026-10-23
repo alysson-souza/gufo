@@ -4,10 +4,11 @@ import json
 import sys
 
 from cache_growth import check_unchanged_retry, log_offset
-from tool_native import assert_native, cached
+from tool_native import assert_native, cached, keep_flint_frontier
 
 
-def check_tool_choice_cache(client, model, checks, chat_result, server_log=None):
+def check_tool_choice_cache(client, model, checks, chat_result, server_log=None,
+                            sampling_preset=None):
     from messages_count_tokens import assert_count_response
     function = {
         "name": "read", "description": "Read a file.",
@@ -17,6 +18,10 @@ def check_tool_choice_cache(client, model, checks, chat_result, server_log=None)
                   parallel_tool_calls=False, max_completion_tokens=128,
                   tools=[{"type": "function", "function": function}],
                   extra_body={"cache_prompt": True})
+    # Every case measures the generated frontier, which a Flint turn without
+    # reasoning cannot replay (thinking_off.py): keep and echo its reasoning.
+    keep_flint_frontier(common, sampling_preset, "max_completion_tokens")
+    flint = sampling_preset == "flint"
 
     def record(label, request, streaming=False):
         result = chat_result(client, request, streaming)
@@ -45,7 +50,8 @@ def check_tool_choice_cache(client, model, checks, chat_result, server_log=None)
         assert json.loads(call["function"]["arguments"]) == {"path": "fixture.txt"}, first
         continued = {**common, "messages": [
             *messages,
-            {"role": "assistant", "content": first["text"] or None, "tool_calls": [call]},
+            {"role": "assistant", "content": first["text"] or None, "tool_calls": [call],
+             **({"reasoning_content": first["reasoning"]} if flint else {})},
             {"role": "tool", "tool_call_id": call["id"], "content": "The file says DONE."},
             {"role": "user", "content": (
                 "Call read once more with path verified.txt." if after == "required"
@@ -95,4 +101,10 @@ def check_tool_choice_cache(client, model, checks, chat_result, server_log=None)
     for call in forced["tools"]:
         assert call["function"]["name"] == "read", forced
         arguments = json.loads(call["function"]["arguments"])
-        assert isinstance(arguments.get("path"), str), forced
+        # Flint's grammar keeps only the call format for this non-strict tool,
+        # so its required `path` is the model's to write; the call must still
+        # come at once, without prose.
+        if flint:
+            assert not forced["text"].strip(), forced
+        else:
+            assert isinstance(arguments.get("path"), str), forced

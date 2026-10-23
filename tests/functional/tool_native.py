@@ -14,6 +14,7 @@ import json
 import sys
 
 from tier import rotate
+from thinking_off import keep_reasoning
 from tool_reasoning import response_result
 
 SCHEMA = "https://json-schema.org/draft/2020-12/schema"
@@ -148,19 +149,79 @@ def cached(usage):
 def assert_native(result, label):
     text = result["text"]
     leaked = [tag for tag in ("<tool_call>", "</tool_call>", "<function=", "<parameter",
-                              "<invoke", '{"name"', "<｜DSML｜") if tag in text]
+                              "<arg_key>", "<arg_value>", "<invoke", '{"name"', "<｜DSML｜")
+              if tag in text]
     assert not leaked, (label, "framing leaked into content", leaked, result)
+
+
+def flint_typed(parameters, key, value):
+    """The argument Flint's reference parser (rec_mlx `parse_tool_call`)
+    returns for `value` written as Flint's template writes it: strings raw,
+    other values JSON. It types `null` where the schema admits null, keeps raw
+    text where it admits strings (by type, string enum or an anyOf/oneOf
+    branch), and otherwise decodes the text as JSON when it parses. So a
+    const or allOf string without a type comes back as a number."""
+    def resolve(schema):
+        seen = []
+        while isinstance(schema, dict) and "$ref" in schema:
+            if any(item is schema for item in seen):
+                return None
+            seen.append(schema)
+            target = parameters
+            for part in schema["$ref"].removeprefix("#").strip("/").split("/"):
+                if part:
+                    target = target[part.replace("~1", "/").replace("~0", "~")]
+            if target is parameters:
+                return None  # A recursive parameter has no definite type.
+            schema = target
+        return schema
+
+    def accepts(schema, kind, depth=0):
+        schema = resolve(schema) if depth <= 32 else None
+        if not isinstance(schema, dict):
+            return False
+        types = schema.get("type")
+        if types == kind or (isinstance(types, list) and kind in types):
+            return True
+        if kind == "string" and any(isinstance(item, str) for item in schema.get("enum", ())):
+            return True
+        return any(accepts(option, kind, depth + 1)
+                   for union in ("anyOf", "oneOf") for option in schema.get(union, ()))
+
+    properties = (resolve(parameters) or {}).get("properties")
+    schema = properties.get(key) if isinstance(properties, dict) else None
+    raw = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    if raw == "null" and accepts(schema, "null"):
+        return None
+    if not accepts(schema, "string"):
+        try:
+            return json.loads(raw.strip())
+        except ValueError:
+            pass
+    return raw
 
 
 def check_native_tool_schemas(client, model, checks, chat_result, sampling_preset="qwen38",
                               image=None):
-    deepseek = sampling_preset == "deepseek4"
+    flint = sampling_preset == "flint"
     command = "echo native-schemas"
     prompt = (f"Use the bash tool to run exactly this command: {command}\n"
               "Set its timeout parameter to 5000. Do not call any other tool.")
     common = dict(model=model, temperature=0, seed=41, reasoning_effort="none",
                   parallel_tool_calls=False, max_completion_tokens=160,
                   extra_body={"cache_prompt": True})
+
+    # Flint renders no <think></think> for a reasoning-free turn, so with the
+    # harness's thinking-off budget a replayed call never matches its
+    # generated tokens (thinking_off.py). Its frontier checks keep Flint's
+    # reasoning and echo it, as a client replaying reasoning_content does.
+    frontier = keep_flint_frontier(deepcopy(common), sampling_preset, "max_completion_tokens")
+
+    def replayed(result, call):
+        message = {"role": "assistant", "content": result["text"] or None, "tool_calls": [call]}
+        if flint:
+            message["reasoning_content"] = result["reasoning"]
+        return message
 
     def record(label, result):
         checks[label] = result
@@ -183,7 +244,7 @@ def check_native_tool_schemas(client, model, checks, chat_result, sampling_prese
         for choice in rotate(("auto", "required"), index):
             label = f"native_{name}_{choice}"
             stream = bool(index % 2)
-            request = {**common, "tool_choice": choice,
+            request = {**frontier, "tool_choice": choice,
                        "tools": [*opencode_tools(), neighbor(name)],
                        "messages": [{"role": "system", "content": "You are a coding agent."},
                                     {"role": "user", "content": prompt}]}
@@ -197,7 +258,7 @@ def check_native_tool_schemas(client, model, checks, chat_result, sampling_prese
             call = first["tools"][0]
             continued = {**request, "tool_choice": "auto", "messages": [
                 *request["messages"],
-                {"role": "assistant", "content": first["text"] or None, "tool_calls": [call]},
+                replayed(first, call),
                 {"role": "tool", "tool_call_id": call["id"], "content": "native-schemas\n"},
                 {"role": "user", "content": "Reply with the single word DONE."}]}
             done = record(label + "_continued", chat_result(client, continued, not stream))
@@ -233,6 +294,11 @@ def check_native_tool_schemas(client, model, checks, chat_result, sampling_prese
          "Call mcp_lookup once with date set to 2026-10-05."),
     )
     for index, (name, expected, instruction) in enumerate(typed):
+        if flint:
+            # Flint's reference parser types by schema, not by the request.
+            parameters = neighbor(name)["function"]["parameters"]
+            expected = {key: flint_typed(parameters, key, value)
+                        for key, value in expected.items()}
         for stream in rotate((False, True), index):
             label = f"native_typed_{name}_{index}_{'stream' if stream else 'buffered'}"
             request = {**common, "tool_choice": "required",
@@ -259,7 +325,8 @@ def check_native_tool_schemas(client, model, checks, chat_result, sampling_prese
     # the next turn reuses, in both tool choices.
     for choice in ("auto", "required"):
         label = f"native_zoo_{choice}"
-        request = {**common, "tool_choice": choice, "tools": [*opencode_tools(), *zoo()],
+        request = {**frontier, "tool_choice": choice,
+                   "tools": [*opencode_tools(), *zoo()],
                    "messages": [{"role": "system", "content": "You are a coding agent."},
                                 {"role": "user", "content": prompt}]}
         first = record(label, chat_result(client, request, choice == "auto"))
@@ -267,7 +334,7 @@ def check_native_tool_schemas(client, model, checks, chat_result, sampling_prese
         call = first["tools"][0]
         continued = {**request, "tool_choice": "auto", "messages": [
             *request["messages"],
-            {"role": "assistant", "content": first["text"] or None, "tool_calls": [call]},
+            replayed(first, call),
             {"role": "tool", "tool_call_id": call["id"], "content": "native-schemas\n"},
             {"role": "user", "content": "Reply with the single word DONE."}]}
         done = record(label + "_continued", chat_result(client, continued, choice != "auto"))
@@ -276,8 +343,11 @@ def check_native_tool_schemas(client, model, checks, chat_result, sampling_prese
             label, "the generated call was not reused on the next turn",
             first["usage"], done["usage"])
 
-    check_llama_cpp_parity(client, model, checks, chat_result, common, deepseek)
-    check_finite_argument_types(client, model, checks, chat_result, image)
+    # At budget 0 Flint can continue its reasoning as text before a required
+    # call and run out; `frontier` keeps its reasoning (and equals `common`
+    # for other models).
+    check_llama_cpp_parity(client, model, checks, chat_result, frontier, sampling_preset)
+    check_finite_argument_types(client, model, checks, chat_result, image, sampling_preset)
 
     # A strict union stays native too; llama.cpp has no strict mode. (Strict
     # validation still rejects keywords such as oneOf before generation.)
@@ -301,15 +371,18 @@ def check_native_tool_schemas(client, model, checks, chat_result, sampling_prese
     result = record("native_responses", response_result(client, responses, True))
     assert result["tools"] and result["tools"][0]["function"]["name"] == "bash", result
     assert_native(result, "native_responses")
-    print(f"CHECK native_schemas_complete deepseek={deepseek}", file=sys.stderr, flush=True)
+    print(f"CHECK native_schemas_complete preset={sampling_preset}", file=sys.stderr, flush=True)
 
 
 # (responses, stream) pairs; the pr tier rotates one per finite type.
 TRANSPORTS = ((False, False), (False, True), (True, False), (True, True))
 
 
-def check_finite_argument_types(client, model, checks, chat_result, image=None):
-    """const/enum without type still have a type, including through unions."""
+def check_finite_argument_types(client, model, checks, chat_result, image=None,
+                                sampling_preset=None):
+    """const/enum without type still have a type, including through unions.
+
+    Flint returns what its reference parser types (see `flint_typed`)."""
     check_read_arguments(client, model, checks, chat_result)
     literal = ("line\n</parameter> is literal\n"
                "</parameter> <parameter=other>data\n"
@@ -345,14 +418,28 @@ def check_finite_argument_types(client, model, checks, chat_result, image=None):
             checks[label] = result
             assert len(result["tools"]) == 1, (label, result)
             actual = json.loads(result["tools"][0]["function"]["arguments"])
-            assert actual == {"v": value} and type(actual["v"]) is type(value), (label, actual)
+            # Flint keeps only the call format for this non-strict tool. The
+            # requested value written raw is typed as `flint_typed` gives;
+            # written as JSON (e.g. "42" quoted) it keeps that JSON type.
+            allowed = ([flint_typed(function["parameters"], "v", value), value]
+                       if sampling_preset == "flint" else [value])
+            assert any(actual == {"v": expected} and type(actual["v"]) is type(expected)
+                       for expected in allowed), (label, actual, allowed)
             assert_native(result, label)
             print(f"CHECK {label}", file=sys.stderr, flush=True)
-    check_literal_history(client, model, checks, chat_result, image)
-    check_integer_history(client, model, checks, chat_result)
+    check_literal_history(client, model, checks, chat_result, image, sampling_preset)
+    check_integer_history(client, model, checks, chat_result, sampling_preset)
 
 
-def check_integer_history(client, model, checks, chat_result):
+def keep_flint_frontier(request, sampling_preset, limit_field):
+    """Let Flint reason so its replayed turn matches (see check_native_tool_schemas)."""
+    if sampling_preset == "flint":
+        request.update({limit_field: 1024, "extra_body": {
+            **request.get("extra_body", {}), **keep_reasoning(sampling_preset)}})
+    return request
+
+
+def check_integer_history(client, model, checks, chat_result, sampling_preset=None):
     """Integers keep their decimal spelling, so replayed calls are reused (#611)."""
     function = {"name": "read", "description": "Read a local text file.",
                 "parameters": {"type": "object", "properties": {
@@ -368,6 +455,7 @@ def check_integer_history(client, model, checks, chat_result):
                            reasoning_effort="none", max_completion_tokens=96,
                            tools=[{"type": "function", "function": function}],
                            tool_choice="required", parallel_tool_calls=False)
+            keep_flint_frontier(request, sampling_preset, "max_completion_tokens")
             first = chat_result(client, request, stream)
             checks[label + "_call"] = first
             assert len(first["tools"]) == 1, (label, first)
@@ -425,7 +513,7 @@ def check_read_arguments(client, model, checks, chat_result):
             print(f"CHECK {label}", file=sys.stderr, flush=True)
 
 
-def check_literal_history(client, model, checks, chat_result, image=None):
+def check_literal_history(client, model, checks, chat_result, image=None, sampling_preset=None):
     """New literal control-token text must not retokenize unchanged history."""
     function = {"name": "read", "description": "Read a file.",
                 "parameters": {"type": "object", "properties": {
@@ -452,6 +540,7 @@ def check_literal_history(client, model, checks, chat_result, image=None):
                                reasoning_effort="none", max_completion_tokens=96,
                                tools=[{"type": "function", "function": function}],
                                parallel_tool_calls=False)
+                keep_flint_frontier(request, sampling_preset, "max_completion_tokens")
                 first = chat_result(client, request)
                 checks[label + "_call"] = first
                 assert first["finish"] == "tool_calls" and len(first["tools"]) == 1, first
@@ -475,6 +564,7 @@ def check_literal_history(client, model, checks, chat_result, image=None):
                                reasoning={"effort": "none"}, max_output_tokens=96, store=False,
                                tools=[{"type": "function", **function, "strict": False}],
                                parallel_tool_calls=False)
+                keep_flint_frontier(request, sampling_preset, "max_output_tokens")
                 response = client.responses.create(**request)
                 first = {"usage": response.usage.to_dict(), "output": [
                     item.to_dict() for item in response.output]}
@@ -518,8 +608,13 @@ def streamed_call_order(client, request):
     return before, after, calls, finish
 
 
-def check_llama_cpp_parity(client, model, checks, chat_result, common, deepseek):
-    """Behaviors llama.cpp's Qwen3-Coder/DeepSeek grammars define (#438)."""
+def check_llama_cpp_parity(client, model, checks, chat_result, common, sampling_preset):
+    """Behaviors llama.cpp's Qwen3-Coder/DeepSeek grammars define (#438).
+
+    Flint follows its reference SGLang grammar and parser instead: calls also
+    end the output, a non-strict tool keeps only the call format, and values
+    are typed as `flint_typed` describes."""
+    deepseek, flint = sampling_preset == "deepseek4", sampling_preset == "flint"
     def record(label, result):
         checks[label] = result
         print(f"CHECK {label}", file=sys.stderr, flush=True)
@@ -538,7 +633,8 @@ def check_llama_cpp_parity(client, model, checks, chat_result, common, deepseek)
         assert calls and finish == "tool_calls", (label, before, after, calls, finish)
         assert not after.strip(), (label, "text followed the call", after)
         assert not any(tag in before for tag in ("<tool_call>", "<function=", "<parameter",
-                                                 "<invoke", "<\uff5cDSML\uff5c")), (label, before)
+                                                 "<arg_key>", "<invoke",
+                                                 "<\uff5cDSML\uff5c")), (label, before)
 
     # A root that is not a plain object declares no parameters in llama.cpp:
     # the call is native, takes none and leaks nothing.
@@ -555,7 +651,9 @@ def check_llama_cpp_parity(client, model, checks, chat_result, common, deepseek)
         assert function["name"] == "mcp_lookup", (label, result)
         # DeepSeek's typed string flag lets gufo's open-tool route carry named
         # arguments where llama.cpp declares none (tests/fixtures records it).
-        assert arguments == {} or (deepseek and name != "root_const"
+        # Flint's grammar leaves a non-strict tool's keys open, so the
+        # requested key may appear for every root, typed as raw text.
+        assert arguments == {} or ((flint or (deepseek and name != "root_const"))
                                    and arguments == {"key": "alpha"}), (label, result)
         assert_native(result, label)
 
@@ -590,10 +688,13 @@ def check_llama_cpp_parity(client, model, checks, chat_result, common, deepseek)
     )
     for name, schema, _, expected, prompt in typing:
         arguments = {}
+        parameters = {"type": "object", "properties": {"value": schema}, "required": ["value"]}
+        if flint:
+            expected = flint_typed(parameters, "value", expected)
         for choice in ("required", "auto"):
             label = f"parity_typing_{name}_{choice}"
-            tool = {"type": "function", "function": {"name": "record", "parameters": {
-                "type": "object", "properties": {"value": schema}, "required": ["value"]}}}
+            tool = {"type": "function", "function": {"name": "record",
+                                                     "parameters": deepcopy(parameters)}}
             request = {**common, "tool_choice": choice, "tools": [tool],
                        "messages": [{"role": "user", "content": prompt}]}
             result = record(label, chat_result(client, request, choice == "auto"))
@@ -602,9 +703,17 @@ def check_llama_cpp_parity(client, model, checks, chat_result, common, deepseek)
             assert_native(result, label)
         # The forced call is exact; an optional call may pick another valid
         # value of the union, but keeps its JSON type.
-        assert arguments["required"] == {"value": expected}, (name, arguments)
+        assert arguments["required"] == {"value": expected} and type(
+            arguments["required"]["value"]) is type(expected), (name, arguments)
+        assert set(arguments["auto"]) == {"value"}, (name, arguments)
+        value = arguments["auto"]["value"]
+        if flint:
+            # Whatever value the model chose, its type is the one the
+            # reference parser gives that value's text under this schema.
+            retyped = flint_typed(parameters, "value", value)
+            assert retyped == value and type(retyped) is type(value), (name, arguments)
+            continue
         allowed = {"str_null": (str, type(None)), "union_integer": (str, int),
                    "all_of_string": (str,), "recursive": (int, float, str, bool, list,
                                                           dict, type(None))}[name]
-        assert set(arguments["auto"]) == {"value"} and isinstance(
-            arguments["auto"]["value"], allowed), (name, arguments)
+        assert isinstance(value, allowed), (name, arguments)

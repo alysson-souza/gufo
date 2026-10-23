@@ -2277,6 +2277,35 @@ void TestPreparedConstraintVocabularyKeepsGrammarBehavior() {
          "both bindings complete the same output");
 }
 
+// A runner whose model opens reasoning itself (Flint) passes no prompt: the
+// budget then waits for the generated start tag. A prompt that opens
+// reasoning counts from its own start tag instead.
+void TestReasoningBudgetStart() {
+  class TagRunner final : public FakeRunner {
+  public:
+    TagRunner() : FakeRunner(std::make_shared<FakeStats>()) {}
+    std::vector<TextRunnerToken> TokenizeControl(
+        std::string_view text) const override {
+      if (text == "<think>")
+        return {300};
+      if (text == "</think>")
+        return {301};
+      return Tokenize(text);
+    }
+  };
+  const TagRunner runner;
+  const auto awaiting = runner.BuildReasoningBudget(2, {});
+  Expect(awaiting && awaiting->start == TextRunnerToken{300} &&
+             awaiting->prompt.empty() &&
+             awaiting->forced == std::vector<TextRunnerToken>{301},
+         "an auto turn's budget waits for the generated start tag");
+  const std::vector<TextRunnerToken> opened{5, 300, 7};
+  const auto counting = runner.BuildReasoningBudget(2, opened);
+  Expect(counting && !counting->start &&
+             counting->prompt == std::vector<TextRunnerToken>{7},
+         "a prompt-opened budget counts from the prompt's start tag");
+}
+
 void TestServerInstructionsAreFraming() {
   using namespace gufo::tokenization;
   class ConstraintRunner final : public FakeRunner {
@@ -2322,6 +2351,36 @@ void TestServerInstructionsAreFraming() {
       Expect(observed == format && constrained.has_value() == json,
              "plain and JSON answers retain the native output dialect");
     }
+  }
+  {
+    // Flint decides on each turn whether to reason: its answers keep an
+    // optional leading think block.
+    const ConstraintRunner flint_runner(
+        gufo::sampling::JsonConstraint::ToolFormat::kFlint);
+    ChatRequest request;
+    request.response_format = gufo::sampling::JsonConstraint::Compile(
+        gufo::json::parse(
+            R"({"type":"object","properties":{},"additionalProperties":false})"),
+        false);
+    gufo::sampling::SamplingConfig sampling;
+    Expect(gufo::server::ConstrainChatRequest(request, flint_runner, &sampling,
+                                              nullptr)
+                   .has_value() &&
+               sampling.constraint,
+           "a Flint response format is constrained");
+    const auto& grammar = *sampling.constraint->grammar;
+    const auto accepts = [&](std::string_view text) {
+      auto state = grammar.Start();
+      for (const unsigned char byte : text) {
+        state = grammar.Advance(state, byte);
+        if (state.empty())
+          return false;
+      }
+      return grammar.Complete(state);
+    };
+    Expect(accepts("{}") && accepts("<think>plan</think>{}") &&
+               !accepts("<think>plan</think>text"),
+           "a Flint answer may follow an optional think block");
   }
   std::vector<std::string> vocab;
   for (int i = 0; i < 256; ++i)
@@ -2521,6 +2580,7 @@ void TestServerInstructionsAreFraming() {
 int main() {
   TestPromptCountingValidatesCapabilitiesBeforeInference();
   TestServerInstructionsAreFraming();
+  TestReasoningBudgetStart();
   TestPreparedConstraintVocabularyKeepsGrammarBehavior();
   // The cache warning assertion in this binary matches the plain "[WARN]
   // [cache]" text captured from a redirected sink; a TTY stderr tints it.

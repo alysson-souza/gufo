@@ -52,6 +52,7 @@ from cache_depth import check_cache_depth
 from cache_stalls import check_cache_stalls
 from cache_rotation import check_cache_rotation
 from prefill_scheduling import check_prefill_scheduling
+from thinking_off import async_budget_request, budget_request, keep_reasoning
 
 
 class CompletionStreamChoice(CompletionChoice):
@@ -319,7 +320,25 @@ def check_sampling_defaults(client, model, checks, preset, overrides, vision=Fal
         print(f"CHECK {name}", file=sys.stderr, flush=True)
         return result
 
-    if not overrides:
+    if not overrides and preset == "flint":
+        # Flint has no thinking switch: effort changes neither its prompt nor
+        # its defaults, so the default turn must replay under any effort. The
+        # explicit server-default budget keeps the harness's thinking-off
+        # budget (thinking_off.py) out of this comparison.
+        request = {
+            "model": model, "seed": 73, "max_completion_tokens": 8,
+            "messages": [{"role": "user", "content": "What is two plus two?"}],
+            "extra_body": {"cache_prompt": False},
+        }
+        default = chat_result(client, request)
+        assert default["reasoning"], default
+        for effort in ("none", "high"):
+            explicit = chat_result(client, {
+                **request, "reasoning_effort": effort,
+                "extra_body": {**request["extra_body"], **keep_reasoning(preset)}}, True)
+            assert signature(default) == signature(explicit), (effort, default, explicit)
+        record("default_thinking_effort", default)
+    elif not overrides:
         # A default server must use the model's recommended thinking mode,
         # including the same effort instructions as an explicit request.
         thinking = server_thinking != "off"
@@ -348,7 +367,7 @@ def check_sampling_defaults(client, model, checks, preset, overrides, vision=Fal
             "frequency_penalty": 0.,
             "seed": 73,
         }
-        native = {"top_k": 20 if preset == "qwen38" else 0,
+        native = {"top_k": 20 if preset in ("qwen38", "flint") else 0,
                   "min_p": 0., "min_keep": 0, "repeat_penalty": 1.,
                   "repeat_last_n": 64}
         assert overrides.keys() <= (expected.keys() | native.keys()), overrides
@@ -1390,7 +1409,7 @@ def check_structured_outputs(client, model, checks, vision=False):
                                      "usage": response.usage.to_dict()})
 
 
-def check_strict_tools(client, model, checks):
+def check_strict_tools(client, model, checks, sampling_preset=None):
     """Strict arguments work without imposing a JSON response on ordinary text."""
     from concurrent.futures import ThreadPoolExecutor
 
@@ -1423,6 +1442,21 @@ def check_strict_tools(client, model, checks):
         result = record("strict_tool_" + ("required" if isinstance(choice, str) else "forced"),
                         chat_result(client, {**common, "tool_choice": choice}, True))
         signature(result)
+    if sampling_preset == "flint":
+        # Flint reasons unless a budget stops it; the strict grammar must
+        # still hold once its own <think> block closes.
+        for choice in ("required", {"type": "function", "function": {"name": "record"}}):
+            result = record(
+                "strict_tool_reasoning_" + ("required" if isinstance(choice, str) else "forced"),
+                chat_result(client, {**common, "tool_choice": choice,
+                                     "max_completion_tokens": 2048,
+                                     "extra_body": {**common["extra_body"],
+                                                    **keep_reasoning(sampling_preset)}}, True))
+            assert result["finish"] == "tool_calls" and len(result["tools"]) == 1, result
+            function = result["tools"][0]["function"]
+            assert function["name"] == "record", result
+            assert json.loads(function["arguments"]) == {"value": literal}, result
+            assert result["reasoning"] and not result["text"].strip(), result
     sampled = {**common, "tool_choice": "required", "temperature": .7, "top_p": .8,
                "presence_penalty": .3, "frequency_penalty": .2,
                "extra_body": {**common["extra_body"], "top_k": 20, "min_p": .05,
@@ -1466,7 +1500,16 @@ def check_strict_tools(client, model, checks):
     non_strict = {**common, "tool_choice": "required",
                   "tools": [{"type": "function", "function": {
                       **tool["function"], "strict": False}}]}
-    signature(record("non_strict_single_call", chat_result(client, non_strict, True)))
+    result = record("non_strict_single_call", chat_result(client, non_strict, True))
+    if sampling_preset == "flint":
+        # Flint's grammar keeps only the call format for non-strict tools
+        # (docs/SERVER.md), so the const is the model's to copy, not enforced.
+        assert result["finish"] == "tool_calls" and len(result["tools"]) == 1, result
+        function = result["tools"][0]["function"]
+        assert function["name"] == "record", result
+        assert set(json.loads(function["arguments"])) == {"value"}, result
+    else:
+        signature(result)
     # gufo #315: a required choice constrains decoding on the default path too,
     # so prose pressure cannot leave the requirement unmet.
     forced = {**common, "tool_choice": "required", "parallel_tool_calls": True,
@@ -1496,11 +1539,11 @@ def check_strict_tools(client, model, checks):
     record("strict_tool_invalid_schema", {"status": 400})
 
 
-def check_native_tools(client, model, checks, vision=False):
+def check_native_tools(client, model, checks, vision=False, sampling_preset=None):
     """Shared function semantics over both SDK transports and concurrent users."""
     from concurrent.futures import ThreadPoolExecutor
 
-    check_strict_tools(client, model, checks)
+    check_strict_tools(client, model, checks, sampling_preset)
     literal = ' <think>literal</think><tool_call></tool_call> "42" \\\nπ🦉\n '
     function = {"name": "record", "strict": True, "parameters": {
         "type": "object", "properties": {
@@ -1592,7 +1635,7 @@ def check_native_tools(client, model, checks, vision=False):
         text = "".join(part.text for item in response.output if item.type == "message"
                        for part in item.content if part.type == "output_text")
         assert not any(tag in text for tag in ("<tool_call>", "<function=", "<parameter=",
-                                               "<｜DSML｜", '{"name"')), response
+                                               "<arg_key>", "<｜DSML｜", '{"name"')), response
         # As in llama.cpp nothing guides an unenforceable string value, so the
         # model may not finish it within the limit; a call it completes is one
         # native record call carrying a string.
@@ -1620,7 +1663,15 @@ def check_native_tools(client, model, checks, vision=False):
         "type": "string", "const": nested}
     result = client.responses.create(**{
         **base, "tools": [{"type": "function", **fallback}]})
-    signature(result, value=nested)
+    if sampling_preset == "flint":
+        # Non-strict tools keep only the call format on Flint (docs/SERVER.md):
+        # the const is the model's to copy, so check the native call itself.
+        calls = [item for item in result.output if item.type == "function_call"]
+        assert result.status == "completed" and len(calls) == 1, result
+        assert calls[0].name == "record", result
+        assert set(json.loads(calls[0].arguments)) == {"value"}, result
+    else:
+        signature(result, value=nested)
     record("responses_literal_call_argument", result.to_dict())
 
     thinking_function = json.loads(json.dumps(function))
@@ -1742,12 +1793,13 @@ def check_tool_edges(client, model, checks, sampling_preset=None):
         assert function["name"] == "read", result
         assert json.loads(function["arguments"]) == {"path": "fixture.xml"}, result
         assert not any(marker in result["text"] for marker in
-                       ("<tool_call>", "<function=", "</parameter>")), result
+                       ("<tool_call>", "<function=", "</parameter>", "<arg_key>")), result
         checks[f"foreign_marker_prose_stream{stream}"] = {
             **result, "foreign_marker_exercised": exercised}
 
     # Parallel calls must survive the native framing. As in llama.cpp, a
-    # DeepSeek call block also ends the output, so no text streams after it.
+    # DeepSeek call block also ends the output, as Flint's calls do, so no text
+    # streams after it.
     prompt = ("Call read twice in parallel, with path a.txt and with path b.txt. "
               "After the calls, write Done.")
     for endpoint in ("chat", "responses"):
@@ -1775,8 +1827,9 @@ def check_tool_edges(client, model, checks, sampling_preset=None):
             paths = sorted(json.loads(call["function"]["arguments"])["path"]
                            for call in result["tools"])
             assert paths == ["a.txt", "b.txt"], result
-            assert "DSML" not in result["text"] and "<tool_call>" not in result["text"], result
-            if sampling_preset == "deepseek4" and "tool" in order:
+            assert not any(marker in result["text"] for marker in
+                           ("DSML", "<tool_call>", "<arg_key>")), result
+            if sampling_preset in ("deepseek4", "flint") and "tool" in order:
                 assert "text" not in order[order.index("tool"):], result
 
     # The newline a model writes between parallel calls is layout, not a reply.
@@ -1810,7 +1863,8 @@ def check_tool_edges(client, model, checks, sampling_preset=None):
                 assert not result["text"] or result["text"].strip(), result
 
 
-def check_state_edges(client, model, checks, speculative, vision=False, server_log=None):
+def check_state_edges(client, model, checks, speculative, vision=False, server_log=None,
+                      sampling_preset=None):
     """Mode proof and request-local grammar state across limits, errors and reuse."""
     common = dict(model=model, temperature=0, top_p=1, seed=91,
                   extra_body={"presence_penalty": 0, "frequency_penalty": 0,
@@ -1894,6 +1948,12 @@ def check_state_edges(client, model, checks, speculative, vision=False, server_l
         "content": {"type": "string", "const": literal + " ZZSTOP"},
         "tag": {"type": "string", "pattern": "^[a-z]+$"}},
         "required": ["content"], "additionalProperties": False}}
+    if sampling_preset == "flint":
+        # Flint enforces the const only for strict tools; the stop must land
+        # inside the argument, which needs that argument enforced. Strict
+        # schemas require every property; content still comes first.
+        quoted["strict"] = True
+        quoted["parameters"]["required"] = ["content", "tag"]
     quoted_request = {**common, "messages": [{"role": "user", "content": "Call record."}],
                       "tools": [{"type": "function", "function": quoted}],
                       "tool_choice": {"type": "function", "function": {"name": "record"}},
@@ -1935,7 +1995,7 @@ def check_state_edges(client, model, checks, speculative, vision=False, server_l
     checks["schema_error_did_not_poison_cache"] = replay
 
 
-def check_auto_tools(client, model, checks, vision=False):
+def check_auto_tools(client, model, checks, vision=False, sampling_preset=None):
     """Automatic calls retain prose, loose schemas, replay and both transports."""
     from concurrent.futures import ThreadPoolExecutor
 
@@ -1944,12 +2004,15 @@ def check_auto_tools(client, model, checks, vision=False):
             "value": {"type": "string"}, "optional": {"type": "integer"}},
         "required": ["value"], "additionalProperties": False}}
     prompt = "Call record exactly once with value alpha. Omit optional. No explanation."
+    # At budget 0 Flint tends to write the call as JSON text; with its own
+    # reasoning it calls the tool, so Flint keeps reasoning and gets room.
+    keep = keep_reasoning(sampling_preset)
     common = dict(model=model, tools=[{"type": "function", "function": function}],
                   tool_choice="auto", parallel_tool_calls=True, temperature=0,
-                  seed=61, max_completion_tokens=160,
+                  seed=61, max_completion_tokens=1024 if keep else 160,
                   messages=[{"role": "user", "content": prompt}],
                   extra_body={"presence_penalty": 0,
-                              "chat_template_kwargs": {"enable_thinking": False}})
+                              "chat_template_kwargs": {"enable_thinking": False}, **keep})
 
     def record(name, value):
         checks[name] = value
@@ -1979,9 +2042,9 @@ def check_auto_tools(client, model, checks, vision=False):
     prose = {**common, "messages": [{"role": "user", "content":
              "Do not call any tools. Reply with the single word Hello."}]}
     for thinking in (False, True):
-        request = {**prose, "max_completion_tokens": 96, "extra_body": {
+        request = {**prose, "max_completion_tokens": 1024 if keep else 96, "extra_body": {
             "presence_penalty": 0,
-            "chat_template_kwargs": {"enable_thinking": thinking}}}
+            "chat_template_kwargs": {"enable_thinking": thinking}, **keep}}
         if thinking:
             request["reasoning_effort"] = "low"
         result = chat_result(client, request, True)
@@ -2003,9 +2066,9 @@ def check_auto_tools(client, model, checks, vision=False):
 
     response_request = dict(
         model=model, input=prompt, tools=[{"type": "function", **function}],
-        tool_choice="auto", parallel_tool_calls=True, max_output_tokens=160,
+        tool_choice="auto", parallel_tool_calls=True, max_output_tokens=1024 if keep else 160,
         temperature=.7, top_p=.85, reasoning={"effort": "none"}, store=False,
-        extra_body={"seed": 61, "top_k": 20, "presence_penalty": 0})
+        extra_body={"seed": 61, "top_k": 20, "presence_penalty": 0, **keep})
 
     def response_signature(result, value="alpha"):
         calls = [item for item in result.output if item.type == "function_call"]
@@ -2302,7 +2365,8 @@ def check_events(events, reasoning):
     return check_response(final, reasoning)
 
 
-def check_responses(client, model, checks, options, async_local_only, expect_reasoning):
+def check_responses(client, model, checks, options, async_local_only, expect_reasoning,
+                    sampling_preset=None):
     prompt = "What is two plus two? Reply briefly."
     request = dict(model=model, input=prompt, temperature=0, max_output_tokens=256,
                    reasoning={"effort": "low" if expect_reasoning else "none"}, store=False)
@@ -2377,7 +2441,9 @@ def check_responses(client, model, checks, options, async_local_only, expect_rea
     async def concurrent():
         async with AsyncOpenAI(**options, http_client=DefaultAsyncHttpxClient(
             trust_env=False, event_hooks={
-                "request": [async_local_only, checks.recorder.async_request_hook],
+                "request": [async_local_only,
+                            *([async_budget_request] if sampling_preset == "flint" else []),
+                            checks.recorder.async_request_hook],
                 "response": [checks.recorder.async_response_hook]}
         )) as client:
             async def generate(index):
@@ -2746,7 +2812,7 @@ def main():
     parser.add_argument("--suite", choices=("all", *SDK_SUITES), default="all")
     parser.add_argument("--vision", action="store_true",
                         help="Add image checks; the server needs its matching --mmproj")
-    parser.add_argument("--sampling-preset", choices=("qwen38", "deepseek4"),
+    parser.add_argument("--sampling-preset", choices=("qwen38", "deepseek4", "flint"),
                         help="Expected text defaults; required for all/sampling-defaults")
     parser.add_argument("--sampling-overrides", type=json.loads, default={},
                         help="JSON object of explicit server sampling CLI values")
@@ -2808,20 +2874,25 @@ def main():
     report["checks"] = checks
     checks.save()
     with OpenAI(**options, http_client=DefaultHttpxClient(
-        trust_env=False, event_hooks={"request": [local_only, recorder.request_hook],
-                                     "response": [recorder.response_hook]}
+        trust_env=False, event_hooks={
+            # Flint's thinking-off budget is part of the request the recorder keeps.
+            "request": [local_only,
+                        *([budget_request] if args.sampling_preset == "flint" else []),
+                        recorder.request_hook],
+            "response": [recorder.response_hook]}
     )) as client:
         suites = {
             "messages-count-tokens": lambda: check_messages_count_tokens(
                 client, args.model, checks, args.context),
             "messages-image-counts": lambda: check_messages_image_counts(
                 client, args.model, checks, args.context, image_content,
-                args.expected_input_modalities.split(",")),
+                args.expected_input_modalities.split(","), args.sampling_preset),
             "discovery": lambda: check_discovery(
                 client, args.model, checks, args.context,
                 args.expected_input_modalities.split(",")),
             "responses": lambda: check_responses(client, args.model, checks, options,
-                                                   async_local_only, args.expect_reasoning),
+                                                   async_local_only, args.expect_reasoning,
+                                                   args.sampling_preset),
             "stops": lambda: check_stops(client, args.model, checks),
             "conversation": lambda: check_conversations(
                 client, args.model, checks, args.vision, args.server_log),
@@ -2835,15 +2906,18 @@ def main():
                 args.server_log),
             "structured": lambda: check_structured_outputs(client, args.model, checks, args.vision),
             "structured-limits": lambda: check_structured_limits(client, args.model, checks, args.vision),
-            "native-tools": lambda: check_native_tools(client, args.model, checks, args.vision),
-            "auto-tools": lambda: check_auto_tools(client, args.model, checks, args.vision),
+            "native-tools": lambda: check_native_tools(
+                client, args.model, checks, args.vision, args.sampling_preset),
+            "auto-tools": lambda: check_auto_tools(
+                client, args.model, checks, args.vision, args.sampling_preset),
             "tool-edges": lambda: check_tool_edges(
                 client, args.model, checks, args.sampling_preset),
             "tool-reasoning": lambda: check_tool_reasoning(
                 client, args.model, checks, chat_result, args.sampling_preset),
             "reasoning-separator": lambda: check_reasoning_separator(
                 client, args.model, checks, chat_result, args.server_log),
-            "tool-streaming": lambda: check_tool_streaming(client, args.model, checks, chat_result),
+            "tool-streaming": lambda: check_tool_streaming(
+                client, args.model, checks, chat_result, args.sampling_preset),
             "reasoning-budget": lambda: check_reasoning_budget(
                 client, args.model, checks, chat_result),
             "tool-agent": lambda: check_tool_agent(
@@ -2852,9 +2926,10 @@ def main():
             "tool-history": lambda: check_tool_history(
                 client, args.model, checks, chat_result, args.vision, image_content, args.server_log),
             "messages-tools": lambda: check_messages_tools(
-                client, args.model, checks, chat_result),
+                client, args.model, checks, chat_result, args.sampling_preset),
             "tool-untyped": lambda: check_untyped_agent_tools(
-                client, args.model, checks, chat_result, args.vision, image_content),
+                client, args.model, checks, chat_result, args.vision, image_content,
+                args.sampling_preset),
             "tool-mixed": lambda: check_mixed_tool_schemas(
                 client, args.model, checks, chat_result, args.vision, image_content,
                 args.sampling_preset),
@@ -2863,15 +2938,17 @@ def main():
                 image_content("red") if args.vision else None),
             "tool-native-types": lambda: check_finite_argument_types(
                 client, args.model, checks, chat_result,
-                image_content("red") if args.vision else None),
+                image_content("red") if args.vision else None, args.sampling_preset),
             "tool-choice-cache": lambda: check_tool_choice_cache(
-                client, args.model, checks, chat_result, args.server_log),
+                client, args.model, checks, chat_result, args.server_log, args.sampling_preset),
             "tool-parameter-order": lambda: check_tool_parameter_order(
                 client, args.model, checks, chat_result),
             "tool-schema-edges": lambda: check_tool_schema_edges(
-                client, args.model, checks, chat_result, args.vision, image_content, args.server_log),
+                client, args.model, checks, chat_result, args.vision, image_content, args.server_log,
+                args.sampling_preset),
             "state-edges": lambda: check_state_edges(
-                client, args.model, checks, args.speculative, args.vision, args.server_log),
+                client, args.model, checks, args.speculative, args.vision, args.server_log,
+                args.sampling_preset),
             "sampling-defaults": lambda: check_sampling_defaults(
                 client, args.model, checks, args.sampling_preset, args.sampling_overrides,
                 args.vision, args.server_thinking),
@@ -2892,7 +2969,7 @@ def main():
             "cache-edits": lambda: check_cache_edits(
                 client, args.model, checks, chat_result, args.server_log),
             "cache-growth": lambda: check_cache_growth(
-                client, args.model, checks, chat_result, args.server_log),
+                client, args.model, checks, chat_result, args.server_log, args.sampling_preset),
             "cache-depth": lambda: check_cache_depth(
                 client, args.model, checks, chat_result, args.concurrency, args.server_log),
             "cache-stalls": lambda: check_cache_stalls(
@@ -2915,7 +2992,7 @@ def main():
             "cache-messages-loop": lambda: check_cache_messages_loop(
                 client, args.model, checks, chat_result, args.context),
             "system-injection": lambda: check_system_injection(
-                client, args.model, checks, chat_result),
+                client, args.model, checks, chat_result, args.sampling_preset),
         }
         selected = ([name for name in suites if name not in ("tool-native-types", "cache-bridge", "cache-compaction", "cache-transforms", "cache-pressure", "cache-messages-loop", "cache-stalls", "prefill-scheduling")
                      and (name not in ("image-inputs", "image-count", "tool-images") or args.vision)]

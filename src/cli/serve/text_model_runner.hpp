@@ -329,8 +329,9 @@ public:
   }
   /// Zero when the vocabulary cannot be enumerated.
   [[nodiscard]] virtual std::uint32_t VocabularySize() const { return 0; }
-  /// A budget for a prompt that opens reasoning, or null when the tags are not
-  /// single tokens in this vocabulary.
+  /// A budget for a prompt that opens reasoning, or, with an empty prompt, for
+  /// a turn that counts from the start tag the model generates. Null when the
+  /// tags are not single tokens in this vocabulary.
   [[nodiscard]] std::shared_ptr<const sampling::ReasoningBudget>
   BuildReasoningBudget(std::size_t tokens,
                        std::span<const TextRunnerToken> prompt) const;

@@ -827,16 +827,19 @@ def check_tool_reasoning(client, model, checks, chat_result, sampling_preset=Non
             del parameters["properties"]["edits"]["items"]["additionalProperties"]
         function = {"name": "edit", "description": "Return an edit for review; never execute it.",
                     "parameters": parameters, "strict": strict}
+        # Flint's reasoning on this prompt (quote, doubt, decide) runs past
+        # 1024 tokens; the check is about where the quoted marker lands.
+        limit = 4096 if sampling_preset == "flint" else 1024
         chat = dict(model=model, messages=[{"role": "user", "content": PROMPT}],
                     tools=[{"type": "function", "function": function}],
                     tool_choice="required", parallel_tool_calls=False,
                     reasoning_effort="low", temperature=0, seed=41,
-                    max_completion_tokens=1024, extra_body={"cache_prompt": False})
+                    max_completion_tokens=limit, extra_body={"cache_prompt": False})
         responses = dict(model=model, input=PROMPT,
                          tools=[{"type": "function", **function}],
                          tool_choice="required", parallel_tool_calls=False, store=False,
                          reasoning={"effort": "low"}, temperature=0,
-                         max_output_tokens=1024,
+                         max_output_tokens=limit,
                          extra_body={"seed": 41, "cache_prompt": False})
         label = "strict" if strict else "non_strict"
         # Pairwise over strictness, endpoint and streaming: each strictness
@@ -871,6 +874,8 @@ def check_tool_reasoning(client, model, checks, chat_result, sampling_preset=Non
         assert result["reasoning"].strip() == thought[:cut].strip(), result
         assert not result["text"] and not result["tools"] and result["finish"] == "stop", result
     check_disabled_tool_markers(client, model, checks, chat_result)
+    # Flint, like Qwen, strips the client's envelope and may turn a literal
+    # <tool_call> (its own opener) into a call; only DeepSeek keeps both as text.
     deepseek = sampling_preset == "deepseek4"
     check_envelope_closer_framing(client, model, checks, chat_result, deepseek)
     check_tail_lookalike_content(client, model, checks, chat_result)

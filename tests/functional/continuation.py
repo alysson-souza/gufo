@@ -19,8 +19,11 @@ import time
 from tool_agent import agent_tools
 from urllib.parse import urlsplit
 from metrics import Recorder
+from thinking_off import budgeted
 
 TRACE = Recorder(None)
+# The served model's preset; "flint" adds its thinking-off budget (thinking_off.py).
+SAMPLING_PRESET = None
 # Matches TextRunnerDiskCacheOptions::min_checkpoint_step_tokens.
 DISK_CHECKPOINT_STEP = 2048
 
@@ -35,6 +38,8 @@ def call(url, body, stop_field=None):
     cls = http.client.HTTPSConnection if target.scheme == "https" else http.client.HTTPConnection
     connection = cls(target.hostname, target.port, timeout=180)
     started = time.monotonic()
+    if SAMPLING_PRESET == "flint":
+        body = budgeted(body)
     measurement = TRACE.begin("/v1/chat/completions", body)
     connection.request("POST", target.path.rstrip("/") + "/v1/chat/completions",
                        json.dumps(body), {"Content-Type": "application/json"})
@@ -123,7 +128,11 @@ def main():
                         help="Length of the synthetic shared system prefix")
     parser.add_argument("--case", action="append", choices=CASES,
                         help="Run only this case (repeatable for focused checks)")
+    parser.add_argument("--sampling-preset", choices=("qwen38", "deepseek4", "flint"),
+                        help="Served model preset; flint sends its thinking-off budget")
     args = parser.parse_args()
+    global SAMPLING_PRESET
+    SAMPLING_PRESET = args.sampling_preset
     TRACE.path = args.output.with_suffix(".requests.json")
     if args.append_image and not args.image:
         parser.error("--append-image requires --image")

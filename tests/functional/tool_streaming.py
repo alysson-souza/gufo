@@ -31,7 +31,7 @@ FUNCTION = {
 }
 
 
-def request(model, api, thinking=False):
+def request(model, api, thinking=False, sampling_preset=None):
     prompt = (
         "Call record exactly once, with text, count, and values matching the "
         "constants in its schema. Keep all literal characters. No visible prose."
@@ -44,27 +44,43 @@ def request(model, api, thinking=False):
             "in its schema; copy them exactly in the call. No visible prose."
         )
     common = dict(model=model, temperature=0)
+    # Flint's grammar enforces argument constants only for strict tools; the
+    # stream must carry exact arguments, so Chat and Responses ask for them.
+    # Strict arrays need an items schema; the const still fixes the value.
+    function = FUNCTION
+    if sampling_preset == "flint":
+        function = json.loads(json.dumps(FUNCTION))
+        function["strict"] = True
+        function["parameters"]["properties"]["values"]["items"] = {"anyOf": [
+            {"type": "boolean"}, {"type": "null"},
+            {"type": "object", "properties": {"key": {"type": "string"}},
+             "required": ["key"], "additionalProperties": False}]}
+    # Flint's reasoning transcribes the long constant before its call.
+    limit = 4096 if sampling_preset == "flint" and thinking else 1024
     if api == "chat":
         return {**common, "messages": [{"role": "user", "content": prompt}],
-                "tools": [{"type": "function", "function": FUNCTION}],
+                "tools": [{"type": "function", "function": function}],
                 "tool_choice": "required", "parallel_tool_calls": False,
                 "reasoning_effort": "low" if thinking else "none",
-                "max_completion_tokens": 1024, "seed": 347}
+                "max_completion_tokens": limit, "seed": 347}
     if api == "responses":
         return {**common, "input": prompt,
-                "tools": [{"type": "function", **FUNCTION}],
+                "tools": [{"type": "function", **function}],
                 "tool_choice": "required", "parallel_tool_calls": False,
                 "reasoning": {"effort": "low" if thinking else "none"},
-                "max_output_tokens": 1024, "store": False,
+                "max_output_tokens": limit, "store": False,
                 "extra_body": {"seed": 347}}
+    # Messages has no zero reasoning budget (thinking_off.py), and Flint ignores
+    # disabled thinking; its shortest equivalent is a one-token budget.
+    off = ({"type": "enabled", "budget_tokens": 1} if sampling_preset == "flint"
+           else {"type": "disabled"})
     return {**common, "messages": [{"role": "user", "content": prompt}],
             "tools": [{"name": FUNCTION["name"],
                        "description": FUNCTION["description"],
                        "input_schema": FUNCTION["parameters"]}],
             "tool_choice": {"type": "tool", "name": "record",
                             "disable_parallel_tool_use": True},
-            "thinking": {"type": "enabled", "budget_tokens": 256}
-                        if thinking else {"type": "disabled"},
+            "thinking": {"type": "enabled", "budget_tokens": 256} if thinking else off,
             "output_config": {"effort": "low"},
             "max_tokens": 1024, "seed": 347}
 
@@ -158,22 +174,31 @@ def analyze(api, events, arrivals):
                 fragments=fragments, terminal_ms=arrivals[-1])
 
 
-def check_tool_streaming(client, model, checks, chat_result):
+def check_tool_streaming(client, model, checks, chat_result, sampling_preset=None):
     for api in ("chat", "responses", "messages"):
+        # Messages tools have no strict flag, so Flint's Messages calls keep
+        # only the call format: their constants are the model's to copy.
+        exact = api != "messages" or sampling_preset != "flint"
         for thinking in (False, True):
-            body = request(model, api, thinking)
+            body = request(model, api, thinking, sampling_preset)
             result = collect(client, api, body)
             checks[f"tool_streaming_{api}_{'thinking' if thinking else 'plain'}"] = result
             assert result["finish"] == {
                 "chat": "tool_calls", "responses": "completed", "messages": "tool_use"}[api], result
             assert len(result["arguments"]) == 1, result
-            assert json.loads(result["arguments"][0]) == EXPECTED, result
+            arguments = json.loads(result["arguments"][0])
+            assert arguments == EXPECTED if exact else arguments.keys() == EXPECTED.keys(), result
             assert not result["content"].strip(), result
-            assert bool(result["reasoning"].strip()) == thinking, result
+            # Flint's one-token Messages budget may or may not show reasoning.
+            if thinking or api != "messages" or sampling_preset != "flint":
+                assert bool(result["reasoning"].strip()) == thinking, result
             assert len(result["fragments"]) > 3, ("tool arguments were buffered", result)
             assert result["fragments"][0]["ms"] < result["fragments"][-1]["ms"] < result["terminal_ms"], result
 
-        body = request(model, api)
+        if not exact:
+            # The stop and resume checks need STOP_HERE inside an enforced value.
+            continue
+        body = request(model, api, sampling_preset=sampling_preset)
         phase = "limited" if api == "responses" else "stopped"
         if api == "responses":
             # Responses has no stop-sequence request field.
@@ -199,7 +224,7 @@ def check_tool_streaming(client, model, checks, chat_result):
         assert set(resumed["identifiers"]).isdisjoint(result["identifiers"]), resumed
 
     # Byte limits interrupt argument generation; the next request starts cleanly.
-    body = request(model, "chat")
+    body = request(model, "chat", sampling_preset=sampling_preset)
     limited = chat_result(client, {**body, "max_completion_tokens": 32}, True)
     checks["tool_streaming_length"] = limited
     assert limited["finish"] == "length" and limited.get("partial_tools"), limited
@@ -209,7 +234,7 @@ def check_tool_streaming(client, model, checks, chat_result):
     assert json.loads(restored["tools"][0]["function"]["arguments"]) == EXPECTED, restored
 
     for thinking in (False, True):
-        body = request(model, "chat", thinking)
+        body = request(model, "chat", thinking, sampling_preset)
         received, reasoning = "", ""
         with client.chat.completions.create(**body, stream=True) as stream:
             for chunk in stream:

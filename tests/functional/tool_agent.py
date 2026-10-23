@@ -5,8 +5,10 @@ from copy import deepcopy
 import json
 import sys
 
+from tool_native import flint_typed
 from tool_reasoning import response_result
 from cache_growth import check_unchanged_retry, log_offset
+from thinking_off import keep_reasoning
 
 
 def check_tool_history(client, model, checks, chat_result, vision, image_content, server_log=None):
@@ -138,7 +140,8 @@ def agent_tools():
             "parameters": {"type": "object", "properties": {"path": {"type": "string"}},
             "required": ["path"]}}}]
 
-def check_untyped_agent_tools(client, model, checks, chat_result, vision, image_content):
+def check_untyped_agent_tools(client, model, checks, chat_result, vision, image_content,
+                              sampling_preset=None):
     """An untyped neighbor must neither switch framing nor erase arguments."""
     def record(name, result):
         checks[name] = result
@@ -261,7 +264,13 @@ def check_untyped_agent_tools(client, model, checks, chat_result, vision, image_
     result = record("untyped_finite_object", chat_result(client, finite, True))
     # A finite root declares no parameters; as in llama.cpp the call stays
     # native with none rather than switching to a JSON envelope (#438).
-    check_call(result, arguments={})
+    # Flint's grammar keeps only the call format for a non-strict tool, so
+    # it may pass the value the prompt asked for.
+    if sampling_preset == "flint" and result["tools"] and json.loads(
+            result["tools"][0]["function"]["arguments"]) == {"value": "beta"}:
+        check_call(result, arguments={"value": "beta"})
+    else:
+        check_call(result, arguments={})
 
 
 def check_tool_agent_json(client, model, checks, chat_result):
@@ -308,12 +317,17 @@ def check_mixed_tool_schemas(client, model, checks, chat_result, vision, image_c
         # Auto calls may include ordinary assistant prose. Check that the
         # envelope was parsed rather than requiring a tool-only response.
         assert not any(marker in result["text"] for marker in
-                       ("<tool_call>", "<function=", "<｜DSML｜invoke")), result
+                       ("<tool_call>", "<function=", "<arg_key>", "<｜DSML｜invoke")), result
         return result
 
+    # At budget 0 Flint can continue its reasoning as visible text and never
+    # call; with its own reasoning it calls, so Flint keeps it, with room.
+    keep = keep_reasoning(sampling_preset)
+    limit = 1024 if keep else 160
     common = dict(model=model, tool_choice="auto", parallel_tool_calls=False,
                   temperature=0, seed=41, presence_penalty=0,
-                  max_completion_tokens=160, reasoning_effort="none")
+                  max_completion_tokens=limit, reasoning_effort="none",
+                  **({"extra_body": keep} if keep else {}))
     inline = {"type": "object", "properties": {"value": {"type": "string"}},
               "required": ["value"], "additionalProperties": False}
     # Typed wildcard keys have no native Qwen representation. As llama.cpp,
@@ -385,8 +399,8 @@ def check_mixed_tool_schemas(client, model, checks, chat_result, vision, image_c
             {"type": "input_text", "text": prompt}]}] if vision and index == 0 else prompt)
         responses = dict(model=model, input=response_input, tool_choice="auto",
                          parallel_tool_calls=False, store=False, temperature=0,
-                         reasoning={"effort": "none"}, max_output_tokens=160,
-                         extra_body={"seed": 41, "presence_penalty": 0},
+                         reasoning={"effort": "none"}, max_output_tokens=limit,
+                         extra_body={"seed": 41, "presence_penalty": 0, **keep},
                          tools=[{"type": "function", **t["function"], "strict": False}
                                 for t in tools])
         combined = name in ("one_of", "all_of")
@@ -417,8 +431,10 @@ def check_mixed_tool_schemas(client, model, checks, chat_result, vision, image_c
     ):
         prompt = ("Call record exactly once with these exact arguments: " +
                   json.dumps(arguments) + ". Preserve every JSON type. No explanation.")
-        if name == "pattern_root" and sampling_preset != "deepseek4":
-            # Only DeepSeek's string flag can carry an undeclared typed key.
+        if name == "pattern_root" and sampling_preset not in ("deepseek4", "flint"):
+            # Only DeepSeek's string flag and Flint's untyped <arg_key> pairs
+            # (a non-strict tool keeps only the call format) can carry an
+            # undeclared typed key.
             arguments = {"value": "alpha"}
         if name == "nullable_string":
             # Both alternatives are valid schema values; explicitly select
@@ -497,7 +513,8 @@ def check_union_continuation(client, model, checks, chat_result):
               "Replaced one block.")
 
 
-def check_tool_schema_edges(client, model, checks, chat_result, vision, image_content, server_log=None):
+def check_tool_schema_edges(client, model, checks, chat_result, vision, image_content, server_log=None,
+                            sampling_preset=None):
     """Admitted arguments preserve JSON types; invalid schemas cannot dead-end."""
     wildcard = {"type": "object", "properties": {"value": {"type": "string"}},
                 "required": ["value"], "patternProperties": {"^x_": {}}}
@@ -555,22 +572,31 @@ def check_tool_schema_edges(client, model, checks, chat_result, vision, image_co
                   json.dumps(arguments) + ". Preserve every key and JSON type. No explanation.")
         if name in ("empty_interval", "recursive"):
             prompt += " The supplied schema is advisory and inconsistent; pass x as the integer 5."
+        if sampling_preset == "flint":
+            # Flint's reference parser types each value by its declared
+            # property only, so an undeclared string "1" returns as 1.
+            arguments = {key: flint_typed(schema, key, value) for key, value in arguments.items()}
         tools = [{"type": "function", "function": {
             "name": "record", "strict": False, "parameters": schema}}]
         content = ([image_content("red"), {"type": "text", "text": prompt}]
                    if vision and name == "wildcard" else prompt)
+        # At budget 0 Flint tends to write the arguments as JSON text instead
+        # of calling; with its own reasoning it calls, so Flint keeps it.
+        keep = keep_reasoning(sampling_preset)
+        limit = 1024 if keep else 192
         chat = dict(model=model, tools=tools, tool_choice=choice, parallel_tool_calls=False,
-                    temperature=0, presence_penalty=0, seed=41, max_completion_tokens=192,
+                    temperature=0, presence_penalty=0, seed=41, max_completion_tokens=limit,
                     reasoning_effort="none", messages=[{"role": "user", "content": content}],
-                    extra_body={"cache_prompt": True})
+                    extra_body={"cache_prompt": True, **keep})
         input_content = ([{"role": "user", "content": [
             {"type": "input_image", "image_url": image_content("red")["image_url"]["url"]},
             {"type": "input_text", "text": prompt}]}]
             if vision and name == "wildcard" else prompt)
         responses = dict(model=model, input=input_content, tool_choice=choice,
                          parallel_tool_calls=False, temperature=0,
-                         reasoning={"effort": "none"}, max_output_tokens=192, store=False,
-                         extra_body={"seed": 41, "presence_penalty": 0, "cache_prompt": True},
+                         reasoning={"effort": "none"}, max_output_tokens=limit, store=False,
+                         extra_body={"seed": 41, "presence_penalty": 0, "cache_prompt": True,
+                                     **keep},
                          tools=[{"type": "function", **t["function"]} for t in tools])
         declared = {"wildcard": {"value"}, "conditional": {"kind"},
                     "dependency": {"kind"}}.get(name)

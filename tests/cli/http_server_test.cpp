@@ -2734,7 +2734,8 @@ void TestResponseSamplingDefaults() {
   RunningServer server;
   using gufo::sampling::TextModelPreset;
   for (const auto model :
-       {TextModelPreset::kQwen38, TextModelPreset::kDeepSeekV4Flash}) {
+       {TextModelPreset::kQwen38, TextModelPreset::kDeepSeekV4Flash,
+        TextModelPreset::kFlint}) {
     server.backend->defaults.model = model;
     for (const bool server_thinking : {false, true}) {
       server.backend->reasoning.enabled = server_thinking;
@@ -2757,7 +2758,7 @@ void TestResponseSamplingDefaults() {
         assert(call.sampling.top_p == (qwen_off ? 0.8F : 0.95F));
         assert(call.sampling.presence_penalty == (qwen_off ? 1.5F : 0.0F));
         assert(call.sampling.top_k ==
-               (model == TextModelPreset::kQwen38 ? 20 : 0));
+               (model == TextModelPreset::kDeepSeekV4Flash ? 0 : 20));
         // Explicit CLI values survive reasoning changes and SDK nulls.
         server.backend->defaults.sampling.temperature = 0.25F;
         server.backend->defaults.sampling.top_k = 0;

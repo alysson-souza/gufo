@@ -4,6 +4,8 @@ from copy import deepcopy
 import re
 import sys
 
+from thinking_off import keep_reasoning
+
 # The assistant opening after a stable boundary, such as Qwen's
 # `<|im_start|>assistant\n<think>\n`, is a few tokens long.
 ASSISTANT_OPENING_TOKENS = 16
@@ -47,7 +49,8 @@ def check_unchanged_retry(label, retry, prefilled, server_log, start, end, *,
           f"prefilled {prefilled} of {total} tokens", file=sys.stderr, flush=True)
 
 
-def check_cache_growth(client, model, checks, chat_result, server_log=None):
+def check_cache_growth(client, model, checks, chat_result, server_log=None,
+                       sampling_preset=None):
     failures = []
     for replay in ("drop_reasoning", "keep_reasoning", "discard_reasoning", "thinking_off"):
         label = "cache_growth_" + replay
@@ -138,7 +141,8 @@ def check_cache_growth(client, model, checks, chat_result, server_log=None):
             assert work(cold) == (total, 0, total), cold
             assert answer(warm) == answer(cold), (warm, cold)
 
-    check_messages_growth(client, model, checks, chat_result, failures, server_log)
+    check_messages_growth(client, model, checks, chat_result, failures, server_log,
+                          sampling_preset)
     assert not failures, "\n".join(failures)
 
 
@@ -162,9 +166,14 @@ def messages_result(client, body):
     }
 
 
-def check_messages_growth(client, model, checks, chat_result, failures, server_log):
+def check_messages_growth(client, model, checks, chat_result, failures, server_log,
+                          sampling_preset=None):
     """Messages clients replay thinking blocks unchanged; reuse must then cover
     the previous assistant turn, and thinking must never reach the text block."""
+    # Messages cannot set a zero reasoning budget (thinking_off.py) and Flint
+    # ignores disabled thinking, so its turns reason in both modes; the Chat
+    # controls then keep Flint's reasoning too.
+    flint = sampling_preset == "flint"
     for replay in ("keep_thinking", "thinking_off"):
         label = "cache_growth_messages_" + replay
         thinking = replay != "thinking_off"
@@ -201,7 +210,7 @@ def check_messages_growth(client, model, checks, chat_result, failures, server_l
             result = record(f"turn_{turn}", messages_result(client, body))
             total, reused, prefilled = work(result)
             assert result["text"].strip() == "BETA" and result["finish"] == "stop", result
-            assert bool(result["reasoning"].strip()) == thinking, result
+            assert flint or bool(result["reasoning"].strip()) == thinking, result
             if turn > 0:
                 assert total > previous_total, (total, previous_total)
                 # An unchanged replay reproduces the generated assistant turn,
@@ -243,9 +252,11 @@ def check_messages_growth(client, model, checks, chat_result, failures, server_l
                 model=model, messages=chat, temperature=0, seed=31,
                 max_completion_tokens=request["max_tokens"],
                 extra_body={"cache_prompt": False,
-                            "thinking": {"type": "enabled" if thinking else "disabled"}}))
+                            "thinking": {"type": "enabled" if thinking else "disabled"},
+                            **keep_reasoning(sampling_preset)}))
             record(f"cold_control_{turn}", cold)
             total = warm["usage"]["prompt_tokens"]
             assert work(cold) == (total, 0, total), (warm, cold)
             assert (cold["text"].strip(), bool(cold["reasoning"].strip())) == \
-                (warm["text"].strip(), thinking), (warm, cold)
+                (warm["text"].strip(), bool(warm["reasoning"].strip()) if flint else thinking), (
+                    warm, cold)

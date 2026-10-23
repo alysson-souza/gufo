@@ -24,6 +24,7 @@
 #include "src/core/sampling.hpp"
 #include "src/models/deepseek_v4_flash/dspark_sampler.hpp"
 #include "src/models/deepseek_v4_flash/engine.hpp"
+#include "src/models/flint/engine.hpp"
 #include "src/models/qwen38_flash_next/engine.hpp"
 #include "src/testing/compare/logit_comparator.hpp"
 
@@ -133,8 +134,8 @@ void RegisterBenchOptions(ArgParser& parser, BenchOptions& opt,
 
   parser.AddCustomOption(
       "-c", "--concurrency", "n,n,...",
-      "DS4 simultaneous requests, 1..8 (default: 1); pp is aggregate, tg per "
-      "user",
+      "DS4 and Flint simultaneous requests, 1..8 (default: 1); pp is "
+      "aggregate, tg per user",
       "Workload",
       [&opt](std::string_view, std::string_view value, std::string* error) {
         auto sizes = ParseCommaSeparatedSizes(value, true);
@@ -143,7 +144,8 @@ void RegisterBenchOptions(ArgParser& parser, BenchOptions& opt,
                         [](auto size) { return size < 1 || size > 8; })) {
           if (error)
             *error =
-                "--concurrency requires DS4 request counts between 1 and 8";
+                "--concurrency requires DS4 or Flint request counts between 1 "
+                "and 8";
           return false;
         }
         opt.concurrency = std::move(*sizes);
@@ -1157,6 +1159,298 @@ int RunQwen38FlashNextBenchmark(
   return 0;
 }
 
+bool IsFlint(const core::GgufReader& reader) {
+  return reader.GetMetadataString("general.architecture") == "flint";
+}
+
+// Session::Sync accepts at most PrefillCapacity() new tokens per call.
+bool SyncFlint(models::flint::Session& session,
+               std::span<const std::uint32_t> prompt, std::string* error) {
+  while (session.Position() < prompt.size()) {
+    const std::size_t capacity = session.PrefillCapacity();
+    if (capacity == 0) {
+      *error = "Flint session has no prefill capacity";
+      return false;
+    }
+    const std::size_t next = std::min(
+        prompt.size(), static_cast<std::size_t>(session.Position()) + capacity);
+    if (!session.Sync(prompt.first(next), error))
+      return false;
+  }
+  return true;
+}
+
+std::string FlintOutputSha256(std::span<const std::uint32_t> tokens) {
+  std::vector<std::uint8_t> bytes;
+  bytes.reserve(tokens.size_bytes());
+  for (const auto token : tokens) {
+    for (unsigned shift = 0; shift < 32; shift += 8)
+      bytes.push_back(static_cast<std::uint8_t>(token >> shift));
+  }
+  return crypto::Sha256Hex(bytes);
+}
+
+int RunFlintBenchmark(const BenchOptions& options,
+                      const std::shared_ptr<const core::GgufReader>& reader,
+                      std::chrono::steady_clock::time_point model_load_start) {
+  namespace flint = models::flint;
+  int device_count = 0;
+  if (hipGetDeviceCount(&device_count) != hipSuccess || device_count == 0) {
+    std::cerr << "Error: no HIP GPU is available for Flint\n";
+    PrintModelLoadTime(model_load_start, false);
+    return 1;
+  }
+  if (!options.speculative_backend.empty()) {
+    std::cerr << "Error: Flint supports only --speculative off\n";
+    return 1;
+  }
+  const auto max_or_zero = [](const std::vector<std::size_t>& values) {
+    return values.empty() ? std::size_t{0}
+                          : *std::max_element(values.begin(), values.end());
+  };
+  const std::size_t max_depth = max_or_zero(options.n_depths);
+  const std::size_t max_prompt = max_or_zero(options.n_prompts);
+  const std::size_t max_generation = max_or_zero(options.n_gens);
+  constexpr std::size_t context_limit =
+      std::numeric_limits<std::uint32_t>::max() - 1;
+  if (max_depth > context_limit || max_prompt > context_limit - max_depth ||
+      max_generation > context_limit - std::max<std::size_t>(max_depth, 16) ||
+      options.validate_prefill_tokens > context_limit) {
+    std::cerr << "Error: requested Flint benchmark context is too large\n";
+    return 1;
+  }
+  const std::size_t required_context =
+      std::max({std::size_t{4096}, max_depth + max_prompt + 1,
+                std::max<std::size_t>(max_depth, 16) + max_generation + 1,
+                options.validate_prefill_tokens + 1});
+
+  std::string error;
+  auto model = flint::Model::Load(
+      options.model_path,
+      flint::ModelOptions{.max_context =
+                              static_cast<std::uint32_t>(required_context)},
+      &error);
+  if (model == nullptr) {
+    std::cerr << "Error creating Flint model: " << error << '\n';
+    PrintModelLoadTime(model_load_start, false);
+    return 1;
+  }
+  PrintModelLoadTime(model_load_start);
+  if (max_or_zero(options.concurrency) > model->MaxBatch()) {
+    std::cerr << "Error: Flint batches at most " << model->MaxBatch()
+              << " sessions\n";
+    return 1;
+  }
+  const auto make_session = [&] {
+    return model->CreateSession(static_cast<std::uint32_t>(required_context),
+                                &error);
+  };
+
+  // Repeat a fixed token pattern for reproducible timing.
+  std::vector<std::uint32_t> tokens;
+  {
+    const auto pattern = model->tokenizer().Encode(
+        "The quick brown fox jumps over the lazy dog. "
+        "Strix Halo executes this deterministic benchmark sequence. ",
+        false);
+    if (pattern.empty()) {
+      std::cerr << "Error: benchmark token pattern is empty\n";
+      return 1;
+    }
+    tokens.resize(required_context);
+    for (std::size_t i = 0; i < tokens.size(); ++i)
+      tokens[i] = pattern[i % pattern.size()];
+  }
+  const std::span<const std::uint32_t> token_span(tokens);
+
+  if (options.validate_prefill_tokens != 0) {
+    // Chunked prefill against one-token-at-a-time evaluation of the same
+    // prefix; both run on the GPU, so this checks the prefill kernels.
+    auto sequential = make_session();
+    auto batched = make_session();
+    const auto prefix = token_span.first(options.validate_prefill_tokens);
+    if (!sequential || !batched || !sequential->Sync(prefix.first(1), &error) ||
+        !SyncFlint(*batched, prefix, &error)) {
+      std::cerr << "Flint prefill validation failed: " << error << '\n';
+      return 1;
+    }
+    for (const std::uint32_t token : prefix.subspan(1)) {
+      if (!sequential->Evaluate(token, &error)) {
+        std::cerr << "Flint sequential reference failed: " << error << '\n';
+        return 1;
+      }
+    }
+    const auto reference = sequential->Logits();
+    const auto candidate = batched->Logits();
+    const auto comparison = testing::CompareLogits(reference, candidate);
+    const std::size_t rank =
+        1 + std::count_if(candidate.begin(), candidate.end(), [&](float value) {
+          return value > candidate[comparison.reference_argmax];
+        });
+    std::cout << "[Prefill Validation] tokens=" << prefix.size()
+              << " finite=" << comparison.finite
+              << " scalar_winner_rank=" << rank
+              << " rmse=" << comparison.root_mean_square_error
+              << " cosine=" << comparison.cosine_similarity
+              << " max_error=" << comparison.max_abs_diff << '\n';
+    if (!comparison.finite || rank > 3 ||
+        comparison.root_mean_square_error > 1.12F ||
+        comparison.cosine_similarity < 0.979F ||
+        comparison.max_abs_diff > 5.0F) {
+      return 1;
+    }
+  }
+
+  const double size_gib =
+      static_cast<double>(reader->GetSize()) / (1024.0 * 1024.0 * 1024.0);
+  const auto model_name = model->ModelName();
+  std::cout << "| " << std::left << std::setw(32) << "model"
+            << " | " << std::right << std::setw(10) << "size"
+            << " | " << std::left << std::setw(10) << "backend"
+            << " | " << std::right << std::setw(18) << "test"
+            << " | " << std::right << std::setw(21) << "t/s"
+            << " |\n"
+            << "| " << std::string(32, '-') << " | " << std::string(10, '-')
+            << " | " << std::string(10, '-') << " | " << std::string(18, '-')
+            << " | " << std::string(21, '-') << " |\n";
+  std::ostringstream size_text;
+  size_text << std::fixed << std::setprecision(2) << size_gib << " GiB";
+  const auto print_result = [&](std::string_view test_name,
+                                const BenchStats& stats) {
+    std::ostringstream throughput;
+    throughput << std::fixed << std::setprecision(2) << stats.mean << " ± "
+               << stats.stddev;
+    std::cout << "| " << std::left << std::setw(32) << model_name << " | "
+              << std::right << std::setw(10) << size_text.str() << " | "
+              << std::left << std::setw(10) << "ROCm (HIP)"
+              << " | " << std::right << std::setw(18) << test_name << " | "
+              << std::right << std::setw(21) << throughput.str() << " |\n"
+              << std::flush;
+  };
+
+  for (const std::size_t concurrency : options.concurrency) {
+    // Sessions are reused across cells; each run restores its prefix.
+    std::vector<std::unique_ptr<flint::Session>> sessions;
+    for (std::size_t i = 0; i < concurrency; ++i) {
+      sessions.push_back(make_session());
+      if (!sessions.back()) {
+        std::cerr << "Error creating Flint session: " << error << '\n';
+        return 1;
+      }
+    }
+    const std::string suffix =
+        concurrency > 1 ? " C" + std::to_string(concurrency) : std::string{};
+    for (const std::size_t depth : options.n_depths) {
+      // Prompt runs extend `depth`; generation runs need a nonempty prefix.
+      const std::size_t prefix = depth > 0 ? depth : 16;
+      std::unique_ptr<flint::SessionSnapshot> snapshot;
+      {
+        auto& base = *sessions.front();
+        base.Invalidate();
+        if (!SyncFlint(base, token_span.first(prefix), &error) ||
+            !(snapshot = base.SaveSnapshot(&error))) {
+          std::cerr << "Error preparing Flint depth " << depth << ": " << error
+                    << '\n';
+          return 1;
+        }
+        if (options.verbose) {
+          std::cerr << "Prepared Flint depth " << prefix
+                    << " snapshot_bytes=" << snapshot->SizeBytes() << '\n';
+        }
+      }
+      const auto restore = [&](flint::Session& session, bool from_prefix) {
+        if (!from_prefix) {
+          session.Invalidate();
+          return true;
+        }
+        return session.RestoreSnapshot(*snapshot, &error);
+      };
+
+      for (const std::size_t prompt_length : options.n_prompts) {
+        std::vector<double> runs;
+        for (std::size_t repetition = 0; repetition < options.repetitions;
+             ++repetition) {
+          for (auto& session : sessions) {
+            if (!restore(*session, depth > 0)) {
+              std::cerr << "Error restoring Flint depth: " << error << '\n';
+              return 1;
+            }
+          }
+          const auto start = std::chrono::steady_clock::now();
+          for (auto& session : sessions) {
+            if (!SyncFlint(*session, token_span.first(depth + prompt_length),
+                           &error)) {
+              std::cerr << "Error running Flint prefill: " << error << '\n';
+              return 1;
+            }
+          }
+          const double seconds = std::chrono::duration<double>(
+                                     std::chrono::steady_clock::now() - start)
+                                     .count();
+          runs.push_back(static_cast<double>(prompt_length * concurrency) /
+                         seconds);
+        }
+        print_result(MakeTestName("pp", prompt_length, depth) + suffix,
+                     ComputeStats(runs));
+      }
+
+      const std::vector<sampling::TokenId> history(
+          tokens.begin(), tokens.begin() + static_cast<std::ptrdiff_t>(prefix));
+      for (const std::size_t generation_length : options.n_gens) {
+        std::vector<double> runs;
+        for (std::size_t repetition = 0; repetition < options.repetitions;
+             ++repetition) {
+          std::vector<sampling::SamplerState> samplers;
+          samplers.reserve(concurrency);
+          std::vector<std::vector<std::uint32_t>> generated(concurrency);
+          std::vector<flint::SessionBatchItem> items(concurrency);
+          for (std::size_t i = 0; i < concurrency; ++i) {
+            if (!restore(*sessions[i], true)) {
+              std::cerr << "Error restoring Flint depth: " << error << '\n';
+              return 1;
+            }
+            samplers.emplace_back(options.sampling, history);
+            generated[i].reserve(generation_length);
+          }
+          const auto start = std::chrono::steady_clock::now();
+          for (std::size_t step = 0; step < generation_length; ++step) {
+            for (std::size_t i = 0; i < concurrency; ++i) {
+              const auto token = samplers[i].Sample(sessions[i]->Logits());
+              samplers[i].Accept(token);
+              generated[i].push_back(token);
+              items[i] = {.session = sessions[i].get(), .token = token};
+            }
+            const bool evaluated =
+                concurrency == 1
+                    ? sessions.front()->Evaluate(items.front().token, &error)
+                    : model->EvaluateBatch(items, &error);
+            if (!evaluated) {
+              std::cerr << "Error running Flint decode: " << error << '\n';
+              return 1;
+            }
+          }
+          const double seconds = std::chrono::duration<double>(
+                                     std::chrono::steady_clock::now() - start)
+                                     .count();
+          runs.push_back(static_cast<double>(generation_length) / seconds);
+          if (options.verbose) {
+            for (std::size_t i = 0; i < concurrency; ++i) {
+              std::cerr << "Flint tg C=" << concurrency << " depth=" << depth
+                        << " request=" << i
+                        << " output_sha256=" << FlintOutputSha256(generated[i])
+                        << '\n';
+            }
+          }
+        }
+        print_result(MakeTestName("tg", generation_length, depth) + suffix,
+                     ComputeStats(runs));
+      }
+    }
+  }
+  std::cout << '\n';
+  return 0;
+}
+
 #endif
 
 }  // namespace
@@ -1318,15 +1612,18 @@ int RunBench(std::span<const char* const> args) {
   if (IsQwen38FlashNext(*reader)) {
     return RunQwen38FlashNextBenchmark(opt, reader, model_load_start);
   }
+  if (IsFlint(*reader)) {
+    return RunFlintBenchmark(opt, reader, model_load_start);
+  }
 
   if (opt.concurrency != std::vector<std::size_t>{1}) {
     std::cerr << "Error: concurrent model benchmarks currently support DS4 "
-                 "only; use the serving benchmark for Qwen\n";
+                 "and Flint only; use the serving benchmark for Qwen\n";
     return 1;
   }
   if (!opt.sampling.can_use_unmodified_argmax()) {
-    std::cerr << "Error: sampled model benchmarks support DS4 and Flash-Next; "
-                 "use the serving benchmark for Qwen\n";
+    std::cerr << "Error: sampled model benchmarks support DS4, Flash-Next and "
+                 "Flint; use the serving benchmark for Qwen\n";
     return 1;
   }
 

@@ -31,6 +31,7 @@
 #include "src/core/utf8.hpp"
 #include "src/models/deepseek_v4_flash/chat_template.hpp"
 #include "src/models/deepseek_v4_flash/tool_calls.hpp"
+#include "src/models/flint/tool_calls.hpp"
 #include "src/models/qwen/chat_template.hpp"
 
 namespace gufo::server {
@@ -95,6 +96,15 @@ constexpr std::array<std::string_view, 7> kToolMarkers{
 };
 using ToolMarkerSet = std::span<const std::string_view>;
 
+// Flint opens calls with the same tag as Qwen. Its marker set is a distinct
+// object, and dialect checks compare identity, not contents.
+constexpr std::array<std::string_view, 1> kFlintToolMarkers{
+    models::flint::FlintToolSyntax::kCallOpen};
+
+bool IsFlint(ToolMarkerSet markers) {
+  return markers.data() == kFlintToolMarkers.data();
+}
+
 ToolMarkerSet ToolMarkers(
     std::optional<sampling::JsonConstraint::ToolFormat> format) {
   using Format = sampling::JsonConstraint::ToolFormat;
@@ -113,12 +123,16 @@ ToolMarkerSet ToolMarkers(
     return kToolMarkers;
   // Match the canonical opener selected by JsonConstraint::WithTools. Other
   // dialects are ordinary prose under that grammar, not additional calls.
+  if (*format == Format::kFlint)
+    return kFlintToolMarkers;
   return *format == Format::kDeepSeek ? ToolMarkerSet(deepseek)
                                       : ToolMarkerSet(qwen);
 }
 
 // A native function header, rather than a bare marker mentioned in prose,
 // permits the implicit reasoning boundary used by llama.cpp's native parsers.
+// Flint closes </think> before it calls a tool (flint_sglang's reasoning
+// parser keeps a call inside reasoning as reasoning), so it has none.
 ToolMarkerSet ReasoningToolMarkers(ToolMarkerSet markers) {
   static constexpr std::array<std::string_view, 1> qwen{
       tokenization::QwenToolSyntax::kNativeCallOpen};
@@ -126,6 +140,8 @@ ToolMarkerSet ReasoningToolMarkers(ToolMarkerSet markers) {
       models::deepseek_v4_flash::DeepSeekToolSyntax::
           kNativeCallOpenWithSeparator,
       models::deepseek_v4_flash::DeepSeekToolSyntax::kNativeCallOpen};
+  if (IsFlint(markers))
+    return {};
   if (markers.size() == 1 &&
       markers.front() == tokenization::QwenToolSyntax::kCallOpen)
     return qwen;
@@ -160,6 +176,11 @@ constexpr std::array<std::string_view, 9> kToolClosers{
     models::deepseek_v4_flash::DeepSeekToolSyntax::kInvokeCloses[0],
     models::deepseek_v4_flash::DeepSeekToolSyntax::kCallsClose,
 };
+// Flint's own closing tags, echoed after an accepted call.
+constexpr std::array<std::string_view, 2> kFlintClosers{
+    models::flint::FlintToolSyntax::kCallClose,
+    models::flint::FlintToolSyntax::kValueClose,
+};
 using ToolCloserSet = std::span<const std::string_view>;
 
 ToolCloserSet ToolClosers(
@@ -172,6 +193,8 @@ ToolCloserSet ToolClosers(
   // envelope syntax the model writes stays visible text.
   if (*format == Format::kDeepSeek)
     return {};
+  if (*format == Format::kFlint)
+    return kFlintClosers;
   // Mirror ToolMarkers: stripping follows the dialect the request admitted,
   // and another dialect's closing tags are ordinary prose like its openers —
   // the client's envelope excepted, which no dialect admits and every one of
@@ -1022,7 +1045,7 @@ std::string_view AfterReasoningSeparator(std::string_view value,
   // Qwen's llama.cpp PEG uses `reasoning << content`: `<<` consumes space().
   // Keep other dialects' existing line-break rule. Only the boundary after an
   // explicit </think> is framing; answer and argument interiors are untouched.
-  const bool qwen = markers.size() == 1 &&
+  const bool qwen = !IsFlint(markers) && markers.size() == 1 &&
                     markers.front() == tokenization::QwenToolSyntax::kCallOpen;
   const auto first = value.find_first_not_of(qwen ? " \t\r\n\f\v" : "\r\n");
   return first == std::string_view::npos ? std::string_view{}
@@ -1748,6 +1771,140 @@ void ParseDsmlCalls(
     break;
   }
 }
+
+// Flint's reference parser, rec_mlx `_accepts`: whether `schema` admits a
+// value of JSON type `kind` by its type, a string enum, or a union branch.
+bool FlintAccepts(const json::Value& root, const json::Value* schema,
+                  std::string_view kind, unsigned depth = 0) {
+  if (schema == nullptr || depth > 32)
+    return false;
+  schema = ResolveToolSchema(root, *schema);
+  if (schema == nullptr || !schema->is_object())
+    return false;
+  if (const auto* type = schema->find("type")) {
+    if (type->is_string() && type->str() == kind)
+      return true;
+    if (type->is_array() &&
+        std::ranges::any_of(type->items(), [&](const auto& item) {
+          return item.is_string() && item.str() == kind;
+        }))
+      return true;
+  }
+  if (const auto* values = schema->find("enum");
+      kind == "string" && values && values->is_array() &&
+      std::ranges::any_of(values->items(),
+                          [](const auto& value) { return value.is_string(); }))
+    return true;
+  for (const auto* key : {"anyOf", "oneOf"})
+    if (const auto* options = schema->find(key); options && options->is_array())
+      for (const auto& option : options->items())
+        if (FlintAccepts(root, &option, kind, depth + 1))
+          return true;
+  return false;
+}
+
+// Types one Flint argument as rec_mlx `parse_tool_call` does: `null` where
+// the schema admits null, raw text where it admits strings, otherwise JSON
+// when the value parses and raw text when it does not.
+tokenization::ChatMessage::ToolArgument FlintArgument(
+    const std::optional<json::Value>& schema, const json::Value* properties,
+    const models::flint::FlintToolArgument& argument) {
+  const json::Value* property = properties != nullptr && properties->is_object()
+                                    ? properties->find(argument.key)
+                                    : nullptr;
+  if (schema && argument.value == "null" &&
+      FlintAccepts(*schema, property, "null"))
+    return {.name = argument.key, .value = "null", .is_string = false};
+  if (!schema || !FlintAccepts(*schema, property, "string")) {
+    const auto trimmed = Trim(argument.value);
+    if (TryParseJson(trimmed))
+      return {.name = argument.key,
+              .value = std::string(trimmed),
+              .is_string = false};
+  }
+  return {.name = argument.key, .value = argument.value, .is_string = true};
+}
+
+// Parses Flint calls from `text`, which begins at the first call marker.
+// `spans` receives the byte ranges of complete calls. Calls to undeclared
+// tools and malformed calls stay text. A repeated argument must repeat its
+// value: a conflicting copy leaves no safe choice, and streaming has already
+// published the first one.
+void ParseFlintCalls(std::string_view text,
+                     std::span<const tokenization::ChatTool> tools,
+                     std::vector<ParsedToolCall>* calls,
+                     std::vector<std::pair<std::size_t, std::size_t>>* spans,
+                     bool partial = false) {
+  using Syntax = models::flint::FlintToolSyntax;
+  QuoteTracker call_quotes;
+  call_quotes.Reset(text);
+  std::size_t cursor = 0;
+  while ((cursor = text.find(Syntax::kCallOpen, cursor)) !=
+         std::string_view::npos) {
+    if (call_quotes.QuotedAt(cursor) ||
+        (partial && call_quotes.UnclosedAt(cursor))) {
+      cursor += Syntax::kCallOpen.size();
+      continue;
+    }
+    const std::size_t begin = cursor;
+    const auto scan = models::flint::ScanFlintToolCall(text.substr(begin));
+    const auto tool =
+        std::ranges::find(tools, scan.name, &tokenization::ChatTool::name);
+    if (!scan.valid || !scan.name_complete || tool == tools.end()) {
+      if (scan.valid && !scan.name_complete)
+        break;  // The name is still being written.
+      cursor = begin + Syntax::kCallOpen.size();
+      continue;
+    }
+    const auto schema = TryParseJson(tool->parameters_json);
+    const auto* object = schema ? ResolveToolSchema(*schema, *schema) : nullptr;
+    const auto* properties = object ? object->find("properties") : nullptr;
+    ParsedToolCall call;
+    call.name = scan.name;
+    bool consistent = true;
+    for (const auto& argument : scan.arguments) {
+      auto typed = FlintArgument(schema, properties, argument);
+      const auto previous = std::ranges::find(
+          call.arguments, typed.name, [](const auto& arg) { return arg.name; });
+      if (previous == call.arguments.end()) {
+        call.arguments.push_back(std::move(typed));
+      } else if (previous->value != typed.value ||
+                 previous->is_string != typed.is_string) {
+        consistent = false;
+        break;
+      }
+    }
+    if (!consistent) {
+      cursor = begin + Syntax::kCallOpen.size();
+      continue;
+    }
+    call.id = RandomId("call_");
+    if (scan.complete) {
+      calls->push_back(std::move(call));
+      cursor = begin + scan.end;
+      // Argument bytes belong to the call, not to prose quotation state.
+      call_quotes.Reset(text, cursor);
+      if (spans)
+        spans->emplace_back(begin, cursor);
+      continue;
+    }
+    if (partial) {
+      if (scan.unfinished) {
+        const auto* property = properties && properties->is_object()
+                                   ? properties->find(scan.unfinished->key)
+                                   : nullptr;
+        if (property && StringOnly(*schema, *property))
+          PartialStringArgument(call, scan.unfinished->key,
+                                scan.unfinished->value);
+      }
+      if (!call.partial_arguments)
+        call.partial_arguments = ArgumentsPrefix(call);
+      calls->push_back(std::move(call));
+    }
+    break;
+  }
+}
+
 ParsedGeneration ParseGeneration(
     std::string_view raw,
     TextGenerationBackend::InitialOutputState initial_output_state,
@@ -1762,10 +1919,12 @@ ParsedGeneration ParseGeneration(
   bool unfinished_reasoning_quote = false;
   const bool recognize_tools =
       !tools.empty() && choice != ChatRequest::ToolChoice::kNone;
-  const auto tool_marker = [recognize_tools, markers,
+  // Flint keeps a call written inside its reasoning as reasoning.
+  const bool reasoning_calls = recognize_tools && !IsFlint(markers);
+  const auto tool_marker = [reasoning_calls, markers,
                             &quotes](std::string_view text) {
     quotes.Reset(text);
-    return recognize_tools ? EarliestMarker(text, markers, quotes)
+    return reasoning_calls ? EarliestMarker(text, markers, quotes)
                            : std::string_view::npos;
   };
 
@@ -1855,7 +2014,12 @@ ParsedGeneration ParseGeneration(
     // The outer envelope selects the format, as in llama.cpp's model parsers.
     // Scanning both dialects would turn a literal call inside an argument into
     // an additional API invocation.
-    if (text_from_tools.starts_with(tokenization::QwenToolSyntax::kCallOpen))
+    if (IsFlint(markers))
+      ParseFlintCalls(
+          text_from_tools, tools, &parsed.tool_calls, &spans,
+          partial && !unfinished_reasoning_quote && !quotes.UnclosedAt(marker));
+    else if (text_from_tools.starts_with(
+                 tokenization::QwenToolSyntax::kCallOpen))
       ParseQwenCalls(parsed.text, tools, &parsed.tool_calls, nullptr,
                      unfinished_reasoning_quote, partial);
     else
@@ -1969,8 +2133,8 @@ ParsedGeneration ParseStructuredGeneration(
   if (const auto marker = EarliestMarker(content, markers, quotes);
       !tools.empty() && choice != ChatRequest::ToolChoice::kNone &&
       (tool_only || marker == 0) && marker != std::string_view::npos &&
-      !content.substr(marker).starts_with(
-          tokenization::QwenToolSyntax::kCallOpen)) {
+      (IsFlint(markers) || !content.substr(marker).starts_with(
+                               tokenization::QwenToolSyntax::kCallOpen))) {
     auto native = ParseGeneration(
         content, TextGenerationBackend::InitialOutputState::kContent, tools,
         choice, enforce_required, markers, closers, quotes, partial);
@@ -2261,8 +2425,9 @@ public:
       const std::size_t end_pos = think_found == std::string::npos
                                       ? std::string::npos
                                       : think_found - offset;
-      const auto thinking_markers =
-          raw_content_ ? ReasoningToolMarkers(markers_) : markers_;
+      const auto thinking_markers = raw_content_ || IsFlint(markers_)
+                                        ? ReasoningToolMarkers(markers_)
+                                        : markers_;
       const auto found =
           !recognize_tools_ ? std::string::npos
           : raw_content_

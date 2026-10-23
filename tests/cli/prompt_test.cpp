@@ -48,6 +48,12 @@ void TestExplicitFlags() {
   assert(sampling.temperature == 0 && sampling.top_k == 0 &&
          sampling.presence_penalty == 0 && sampling.seed == 0);
   assert(sampling.top_p == 0.8F);
+  // Flint has no thinking-off preset; supplied zeros still win.
+  const auto flint = gufo::sampling::ResolveTextSampling(
+      gufo::sampling::TextModelPreset::kFlint, false, zero->sampling,
+      zero->sampling_supplied);
+  assert(flint.temperature == 0 && flint.top_k == 0 &&
+         flint.presence_penalty == 0 && flint.top_p == 0.95F);
 }
 
 void TestFlashMtpFlags() {
