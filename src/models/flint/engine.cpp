@@ -29,9 +29,27 @@ constexpr std::uint32_t kPrefillChunk = 2048;
 constexpr int kMaxBatch = 8;
 /// Previous keys a sliding-window query reads besides its own.
 constexpr std::uint32_t kSlidingHistory = rocm::kSlidingWindow - 1;
+/// Decoded positions re-evaluated through prefill at a time. Decode and
+/// prefill kernels round differently, so a continuation over decode-written
+/// K/V would differ from a cold prefill of the same conversation; prefill is
+/// split-invariant, so re-prefilling decoded tokens makes every held row
+/// equal a cold prefill's. Bounded well below the sliding ring's spare slots
+/// so the window keys the first re-prefilled row reads are still held.
+/// gfx1151, release, Q8_0: tg1024 57.4 -> 55.2 t/s (two re-prefills, -3.8%);
+/// shorter turns pay only when a later Sync extends them.
+constexpr std::uint32_t kRecomputeTokens = 512;
+static_assert(kRecomputeTokens <= kPrefillChunk);
 /// Bytes of one position of one layer's K (or V) across the KV heads.
 constexpr std::size_t kSlotBytes =
     std::size_t{rocm::kKvHeads} * rocm::kHeadDim * sizeof(std::uint16_t);
+
+/// Sliding-window rows a snapshot holds: the window the next position reads,
+/// widened by the decoded tail, whose re-prefill reads the window before it.
+constexpr std::uint32_t SnapshotSlidingRows(std::uint32_t position,
+                                            std::size_t decoded_rows) {
+  return static_cast<std::uint32_t>(
+      std::min<std::uint64_t>(position, kSlidingHistory + decoded_rows));
+}
 
 constexpr std::array<char, 8> kSnapshotMagic{'F', 'L', 'I', 'N',
                                              'T', 'S', 'E', 'S'};
@@ -39,7 +57,9 @@ constexpr std::array<char, 8> kSnapshotMagic{'F', 'L', 'I', 'N',
 /// Leads every serialized snapshot. Logits follow, then per layer in order
 /// K then V as [kv_head][rows][head_dim] FP16, rows ascending by position:
 /// [0, position) for full-attention layers, the last
-/// min(position, 512) positions for sliding layers.
+/// SnapshotSlidingRows(position, decoded_rows) positions for sliding layers.
+/// Last come the token ids of the decoded_rows positions still holding
+/// decode-written rows.
 struct SnapshotHeader {
   std::array<char, 8> magic;
   std::uint32_t version;
@@ -50,6 +70,7 @@ struct SnapshotHeader {
   std::uint32_t vocab;
   std::uint32_t layers;
   std::uint32_t sliding_rows;
+  std::uint32_t decoded_rows;
 };
 static_assert(std::is_trivially_copyable_v<SnapshotHeader>);
 
@@ -176,20 +197,53 @@ public:
   std::unique_ptr<rocm::SessionCache> cache;
   PinnedLogits logits;
   std::uint32_t position = 0;
+  /// Token ids of the last decoded.size() positions, whose K/V rows decode
+  /// wrote; every earlier held row is what a cold prefill writes.
+  std::vector<std::uint32_t> decoded;
   CancellationCheck cancelled;
 
   [[nodiscard]] std::uint32_t SlidingRows() const noexcept {
-    return std::min(position, kSlidingHistory);
+    return SnapshotSlidingRows(position, decoded.size());
   }
 
-  [[nodiscard]] std::uint64_t PayloadBytes(std::uint32_t at) const noexcept {
+  [[nodiscard]] std::uint64_t PayloadBytes(
+      std::uint32_t at, std::size_t decoded_rows) const noexcept {
     const Config& c = device->config;
     std::uint64_t bytes =
         sizeof(SnapshotHeader) + std::uint64_t{device->vocab()} * sizeof(float);
-    const std::uint64_t sliding = std::min(at, kSlidingHistory);
+    const std::uint64_t sliding = SnapshotSlidingRows(at, decoded_rows);
     for (std::uint32_t il = 0; il < c.num_layers; ++il)
       bytes += 2 * (c.IsSliding(il) ? sliding : at) * kSlotBytes;
-    return bytes;
+    return bytes + decoded_rows * sizeof(std::uint32_t);
+  }
+
+  /// Re-prefills the decoded positions in chunks of at most
+  /// kRecomputeTokens, leaving the logits of the last one. A cancelled or
+  /// failed chunk leaves its rows pending and the position unchanged.
+  [[nodiscard]] rocm::Executor::Status Recompute(
+      const CancellationCheck& is_cancelled, std::string* error_msg) {
+    while (!decoded.empty()) {
+      const auto count = static_cast<std::uint32_t>(
+          std::min<std::size_t>(decoded.size(), kRecomputeTokens));
+      const auto first = position - static_cast<std::uint32_t>(decoded.size());
+      const auto status = device->executor->Prefill(
+          *cache, std::span(decoded).first(count), first, logits.data,
+          is_cancelled, error_msg);
+      if (status != rocm::Executor::Status::kOk)
+        return status;
+      decoded.erase(decoded.begin(), decoded.begin() + count);
+    }
+    return rocm::Executor::Status::kOk;
+  }
+
+  /// Records one decoded token at the current position and keeps the
+  /// decode-written tail shorter than kRecomputeTokens.
+  [[nodiscard]] bool Advance(std::uint32_t token, std::string* error_msg) {
+    decoded.push_back(token);
+    ++position;
+    if (decoded.size() < kRecomputeTokens)
+      return true;
+    return Recompute({}, error_msg) == rocm::Executor::Status::kOk;
   }
 
   [[nodiscard]] bool ValidTokens(std::span<const std::uint32_t> tokens,
@@ -231,8 +285,8 @@ constexpr std::size_t kStagingBytes = std::size_t{16} << 20;
 /// [kv_head][rows] with rows ascending by position (one or two ring runs).
 template<typename Fn>
 void ForEachKvRun(const Config& config, const rocm::SessionCache& cache,
-                  std::uint32_t position, std::uint8_t* bytes, Fn&& fn) {
-  const std::uint32_t sliding = std::min(position, kSlidingHistory);
+                  std::uint32_t position, std::uint32_t sliding,
+                  std::uint8_t* bytes, Fn&& fn) {
   for (std::uint32_t il = 0; il < config.num_layers; ++il) {
     const rocm::KvSequence& seq = cache.seqs()[il];
     const auto capacity = static_cast<std::uint32_t>(seq.capacity);
@@ -257,16 +311,17 @@ void ForEachKvRun(const Config& config, const rocm::SessionCache& cache,
 
 /// Restores snapshot rows into a session's cache on `stream`.
 hipError_t UploadKvRows(const Config& config, const rocm::SessionCache& cache,
-                        std::uint32_t position, const std::uint8_t* bytes,
-                        hipStream_t stream) {
+                        std::uint32_t position, std::uint32_t sliding,
+                        const std::uint8_t* bytes, hipStream_t stream) {
   hipError_t status = hipSuccess;
-  ForEachKvRun(config, cache, position, const_cast<std::uint8_t*>(bytes),
-               [&](std::uint8_t* device, std::uint8_t* host, std::size_t size) {
-                 if (status == hipSuccess) {
-                   status = hipMemcpyAsync(device, host, size,
-                                           hipMemcpyHostToDevice, stream);
-                 }
-               });
+  ForEachKvRun(
+      config, cache, position, sliding, const_cast<std::uint8_t*>(bytes),
+      [&](std::uint8_t* device, std::uint8_t* host, std::size_t size) {
+        if (status == hipSuccess) {
+          status =
+              hipMemcpyAsync(device, host, size, hipMemcpyHostToDevice, stream);
+        }
+      });
   return status;
 }
 
@@ -274,14 +329,15 @@ hipError_t UploadKvRows(const Config& config, const rocm::SessionCache& cache,
 /// pinned staging buffers: while one buffer's DMA runs, the other's rows
 /// are copied out on the host. The caller holds snapshot_mutex.
 hipError_t DownloadKvRows(DeviceModel& d, const rocm::SessionCache& cache,
-                          std::uint32_t position, std::uint8_t* bytes) {
+                          std::uint32_t position, std::uint32_t sliding,
+                          std::uint8_t* bytes) {
   struct Piece {
     const std::uint8_t* device;
     std::uint8_t* host;
     std::size_t size;
   };
   std::vector<Piece> pieces;
-  ForEachKvRun(d.config, cache, position, bytes,
+  ForEachKvRun(d.config, cache, position, sliding, bytes,
                [&](std::uint8_t* device, std::uint8_t* host, std::size_t size) {
                  for (std::size_t at = 0; at < size; at += kStagingBytes) {
                    pieces.push_back({device + at, host + at,
@@ -470,9 +526,14 @@ bool Model::EvaluateBatch(std::span<const SessionBatchItem> items,
       item.session->Invalidate();
     return false;
   }
-  for (const SessionBatchItem& item : items)
-    ++item.session->impl_->position;
-  return true;
+  bool ok = true;
+  for (const SessionBatchItem& item : items) {
+    if (!item.session->impl_->Advance(item.token, ok ? error_msg : nullptr)) {
+      item.session->Invalidate();
+      ok = false;
+    }
+  }
+  return ok;
 }
 
 std::size_t Model::MaxBatch() const noexcept {
@@ -537,8 +598,12 @@ bool Session::Sync(std::span<const std::uint32_t> prompt,
     return false;
   if (s.cancelled && s.cancelled())
     return Fail(error_msg, "prefill cancelled");
-  switch (s.device->executor->Prefill(*s.cache, fresh, s.position,
-                                      s.logits.data, s.cancelled, error_msg)) {
+  auto status = s.Recompute(s.cancelled, error_msg);
+  if (status == rocm::Executor::Status::kOk) {
+    status = s.device->executor->Prefill(*s.cache, fresh, s.position,
+                                         s.logits.data, s.cancelled, error_msg);
+  }
+  switch (status) {
     case rocm::Executor::Status::kOk:
       s.position = static_cast<std::uint32_t>(prompt.size());
       return true;
@@ -568,8 +633,10 @@ bool Session::Evaluate(std::uint32_t token, std::string* error_msg) {
     Invalidate();
     return false;
   }
-  ++s.position;
-  return true;
+  if (s.Advance(token, error_msg))
+    return true;
+  Invalidate();
+  return false;
 }
 
 std::span<const float> Session::Logits() const noexcept {
@@ -586,26 +653,30 @@ std::unique_ptr<SessionSnapshot> Session::SaveSnapshot(
     return nullptr;
   }
   const DeviceModel& d = *s.device;
-  const std::size_t size = s.PayloadBytes(s.position);
+  const std::size_t size = s.PayloadBytes(s.position, s.decoded.size());
   // Every byte is written below, so skip zeroing up to a gigabyte.
   auto bytes = std::make_unique_for_overwrite<std::uint8_t[]>(size);
-  const SnapshotHeader header{.magic = kSnapshotMagic,
-                              .version = SessionSnapshot::kPayloadVersion,
-                              .header_bytes = sizeof(SnapshotHeader),
-                              .fingerprint = d.fingerprint,
-                              .total_bytes = size,
-                              .position = s.position,
-                              .vocab = d.vocab(),
-                              .layers = d.config.num_layers,
-                              .sliding_rows = s.SlidingRows()};
+  const SnapshotHeader header{
+      .magic = kSnapshotMagic,
+      .version = SessionSnapshot::kPayloadVersion,
+      .header_bytes = sizeof(SnapshotHeader),
+      .fingerprint = d.fingerprint,
+      .total_bytes = size,
+      .position = s.position,
+      .vocab = d.vocab(),
+      .layers = d.config.num_layers,
+      .sliding_rows = s.SlidingRows(),
+      .decoded_rows = static_cast<std::uint32_t>(s.decoded.size())};
   std::memcpy(bytes.get(), &header, sizeof(header));
   std::memcpy(bytes.get() + sizeof(header), s.logits.data,
               std::size_t{d.vocab()} * sizeof(float));
+  std::memcpy(bytes.get() + size - s.decoded.size() * sizeof(std::uint32_t),
+              s.decoded.data(), s.decoded.size() * sizeof(std::uint32_t));
   hipError_t status;
   {
     std::lock_guard lock(s.device->snapshot_mutex);
     status = DownloadKvRows(
-        *s.device, *s.cache, s.position,
+        *s.device, *s.cache, s.position, s.SlidingRows(),
         bytes.get() + sizeof(header) + std::size_t{d.vocab()} * sizeof(float));
   }
   if (status != hipSuccess) {
@@ -642,14 +713,24 @@ bool Session::RestoreSnapshot(std::span<const std::uint8_t> payload,
     return Fail(error_msg, "snapshot position " +
                                std::to_string(header.position) +
                                " does not fit this session's context");
-  if (header.sliding_rows != std::min(header.position, kSlidingHistory) ||
+  if (header.decoded_rows >= kRecomputeTokens ||
+      header.decoded_rows >= header.position ||
+      header.sliding_rows !=
+          SnapshotSlidingRows(header.position, header.decoded_rows) ||
       header.total_bytes != payload.size() ||
-      payload.size() != s.PayloadBytes(header.position))
+      payload.size() != s.PayloadBytes(header.position, header.decoded_rows))
     return Fail(error_msg, "snapshot size does not match its header");
+  std::vector<std::uint32_t> decoded(header.decoded_rows);
+  std::memcpy(
+      decoded.data(),
+      payload.data() + payload.size() - decoded.size() * sizeof(std::uint32_t),
+      decoded.size() * sizeof(std::uint32_t));
+  if (!s.ValidTokens(decoded, error_msg))
+    return false;
   const std::uint8_t* logits = payload.data() + sizeof(header);
   hipStream_t stream = d.executor->stream();
   hipError_t status =
-      UploadKvRows(d.config, *s.cache, header.position,
+      UploadKvRows(d.config, *s.cache, header.position, header.sliding_rows,
                    logits + std::size_t{d.vocab()} * sizeof(float), stream);
   const hipError_t synced = hipStreamSynchronize(stream);
   if (status == hipSuccess)
@@ -660,6 +741,7 @@ bool Session::RestoreSnapshot(std::span<const std::uint8_t> payload,
   }
   std::memcpy(s.logits.data, logits, std::size_t{d.vocab()} * sizeof(float));
   s.position = header.position;
+  s.decoded = std::move(decoded);
   return true;
 }
 
@@ -669,6 +751,7 @@ void Session::SetCancellationCheck(CancellationCheck is_cancelled) {
 
 void Session::Invalidate() noexcept {
   impl_->position = 0;
+  impl_->decoded.clear();
 }
 
 std::uint32_t Session::Position() const noexcept {
@@ -684,7 +767,9 @@ std::uint32_t Session::PrefillCapacity() const noexcept {
 }
 
 std::uint64_t Session::PayloadBytes() const noexcept {
-  return impl_->position == 0 ? 0 : impl_->PayloadBytes(impl_->position);
+  return impl_->position == 0
+             ? 0
+             : impl_->PayloadBytes(impl_->position, impl_->decoded.size());
 }
 
 // ---------------------------------------------------------------------------

@@ -236,6 +236,42 @@ void CheckSnapshots(const std::shared_ptr<flint::Model>& model) {
   std::cout << "snapshots: RAM and serialized restore exact\n" << std::flush;
 }
 
+// A follow-up turn extends a prefix whose last rows were written by decode,
+// live or restored from a snapshot. Decode and prefill kernels round
+// differently, so the engine evaluates decoded rows again through prefill;
+// the extension must equal a cold prefill of the whole conversation. 700
+// decoded tokens cross one periodic re-prefill and leave a pending tail.
+void CheckDecodedRows(const std::shared_ptr<flint::Model>& model) {
+  std::string error;
+  const auto conversation = LongPrompt(*model, 1020);
+  const auto turn = std::span(conversation).first(1000);
+  auto cold = NewSession(model);
+  Prefill(*cold, conversation);
+
+  auto live = NewSession(model);
+  Prefill(*live, turn.first(300));
+  for (const auto token : turn.subspan(300))
+    Require(live->Evaluate(token, &error), "Evaluate: " + error);
+  auto snapshot = live->SaveSnapshot(&error);
+  Require(snapshot != nullptr, "SaveSnapshot: " + error);
+  Require(snapshot->SizeBytes() == live->PayloadBytes(),
+          "decoded-row snapshot size differs from the session's report");
+
+  auto restored = NewSession(model);
+  Require(restored->RestoreSnapshot(snapshot->bytes(), &error),
+          "restore: " + error);
+  for (flint::Session* session : {live.get(), restored.get()}) {
+    Prefill(*session, conversation);
+    RequireExact(cold->Logits(), session->Logits(),
+                 session == live.get()
+                     ? "extending decoded rows differs from cold prefill"
+                     : "extending restored decoded rows differs from cold "
+                       "prefill");
+  }
+  std::cout << "decoded rows: live and restored extensions equal cold prefill\n"
+            << std::flush;
+}
+
 void CheckBatchedDecode(const std::shared_ptr<flint::Model>& model) {
   std::string error;
   const std::size_t widest = std::min<std::size_t>(4, model->MaxBatch());
@@ -571,6 +607,7 @@ int main(int argc, char** argv) {
     if (only.empty() || only == "--engine-only") {
       CheckPrefillChunks(model);
       CheckSnapshots(model);
+      CheckDecodedRows(model);
       CheckBatchedDecode(model);
     }
     if (only.empty() || only == "--serving-only") {

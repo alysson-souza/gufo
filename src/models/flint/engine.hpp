@@ -98,10 +98,15 @@ public:
   /// Extends the held prefix to `prompt`: `prompt` must start with the
   /// Position() tokens already evaluated and add at most PrefillCapacity()
   /// new ones. Leaves the frontier logits of the last token ready. A
-  /// cancelled call returns false with the session unchanged.
+  /// cancelled call returns false with the position unchanged.
+  ///
+  /// Rows that Evaluate wrote are first evaluated again through prefill, so
+  /// the extended prefix holds exactly what a cold Sync of `prompt` would.
   [[nodiscard]] bool Sync(std::span<const std::uint32_t> prompt,
                           std::string* error_msg = nullptr);
-  /// Evaluates one token after the held prefix.
+  /// Evaluates one token after the held prefix. Every 512 evaluated tokens
+  /// are evaluated again through prefill, which also replaces the frontier
+  /// logits; Sync handles the rest when the prefix is extended.
   [[nodiscard]] bool Evaluate(std::uint32_t token,
                               std::string* error_msg = nullptr);
   /// Host copy of the frontier logits (VocabSize() floats).
@@ -139,12 +144,14 @@ private:
 };
 
 /// Host copy of a session prefix: position, logits and the KV rows it needs
-/// (every full-attention row, the last window of sliding-window rows). The
-/// byte layout is versioned and self-describing so it can be persisted.
+/// (every full-attention row, the sliding-window rows the next position and
+/// any pending re-prefill read), plus the token ids of decode-written rows
+/// not yet evaluated again. The byte layout is versioned and self-describing
+/// so it can be persisted.
 class SessionSnapshot final {
 public:
   /// Version of the serialized layout; any layout change increments it.
-  static constexpr std::uint32_t kPayloadVersion = 1;
+  static constexpr std::uint32_t kPayloadVersion = 2;
 
   ~SessionSnapshot();
 
