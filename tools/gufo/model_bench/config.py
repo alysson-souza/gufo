@@ -79,13 +79,14 @@ class BenchConfig:
         return self.data["reference"]["name"]
 
     @property
-    def speculative(self) -> dict[str, Any]:
-        return self.data["speculative"]
+    def speculative(self) -> dict[str, Any] | None:
+        """The speculative mode's settings; None for models without one."""
+        return self.data.get("speculative")
 
     @property
     def reference_speculative(self) -> list[str] | None:
         """Reference server arguments for the equivalent speculative mode, if any."""
-        reference = self.speculative.get("reference")
+        reference = (self.speculative or {}).get("reference")
         if isinstance(reference, dict) and reference.get("args"):
             return list(reference["args"])
         return None
@@ -141,7 +142,13 @@ def load_config(root: Path, model: str, path: Path | None = None) -> BenchConfig
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("schema") != SCHEMA:
         raise SystemExit(f"{path}: expected schema {SCHEMA}")
-    return BenchConfig(model=model, root=root, data=data)
+    config = BenchConfig(model=model, root=root, data=data)
+    if config.speculative is None:
+        needing = [table.id for table in config.tables()
+                   if table.speculative or any(m != "ar" for m in table.spec.get("modes", ["ar"]))]
+        if needing:
+            raise SystemExit(f"{path}: tables {', '.join(needing)} need a `speculative` section")
+    return config
 
 
 def parse_file_args(config: BenchConfig, values: dict[str, list[str]]) -> None:

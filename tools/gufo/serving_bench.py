@@ -249,6 +249,16 @@ def _rate(tokens: int, milliseconds: float) -> float | None:
     return tokens * 1000.0 / milliseconds
 
 
+def completion_digest(content: str, reasoning: str = "") -> str:
+    """SHA-256 of generated text: the content alone, or reasoning, NUL, content.
+
+    Without reasoning the digest equals the content hash, so artifacts from
+    models whose output is all content keep their hashes.
+    """
+    text = f"{reasoning}\0{content}" if reasoning else content
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _required_number(mapping: dict[str, Any], name: str) -> float:
     value = mapping.get(name)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -376,6 +386,7 @@ def run_request(
     timings: dict[str, Any] | None = None
     useful_event_times: list[float] = []
     completion_parts: list[str] = []
+    reasoning_parts: list[str] = []
     saw_done = False
     try:
         with urllib.request.urlopen(
@@ -405,9 +416,12 @@ def run_request(
                     delta = choices[0].get("delta", {})
                     if isinstance(delta, dict):
                         content = delta.get("content")
+                        reasoning = delta.get("reasoning_content")
                         tool_calls = delta.get("tool_calls")
                         if isinstance(content, str) and content:
                             completion_parts.append(content)
+                        if isinstance(reasoning, str) and reasoning:
+                            reasoning_parts.append(reasoning)
                         if content or tool_calls:
                             useful_event_times.append(clock())
                 candidate_usage = chunk.get("usage")
@@ -583,9 +597,9 @@ def run_request(
         ),
         case_id=case_id,
         category=category,
-        completion_sha256=hashlib.sha256(
-            "".join(completion_parts).encode("utf-8")
-        ).hexdigest(),
+        completion_sha256=completion_digest(
+            "".join(completion_parts), "".join(reasoning_parts)
+        ),
         prefill_tokens_per_second=(
             None if prefill_ms is None else _rate(prefill_tokens, prefill_ms)
         ),
@@ -1367,7 +1381,8 @@ def run_corpus_benchmark(
             ),
             "completion_sha256": (
                 "SHA-256 of generated text for cross-concurrency exactness "
-                "checks; generated text itself is omitted"
+                "checks (reasoning, NUL, content when the server returns "
+                "reasoning_content); generated text itself is omitted"
             ),
         },
         "results": results,

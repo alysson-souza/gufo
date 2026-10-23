@@ -87,7 +87,7 @@ LLAMA_TIMINGS = {
 class FakeResponse:
     status = 200
 
-    def __init__(self, usage=None, timings=None, content=("one", " two")):
+    def __init__(self, usage=None, timings=None, content=("one", " two"), reasoning=()):
         usage = GUFO_USAGE if usage is None else usage
         chunks = [
             {
@@ -100,6 +100,18 @@ class FakeResponse:
                 ]
             },
         ]
+        for part in reasoning:
+            chunks.append(
+                {
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"reasoning_content": part},
+                            "finish_reason": None,
+                        }
+                    ]
+                }
+            )
         for part in content:
             chunks.append(
                 {
@@ -393,6 +405,33 @@ def neutral_benchmark(request, timeout):
 
 
 request_with(neutral_benchmark)
+
+
+def reasoning_stream(request, timeout):
+    del request, timeout
+    return FakeResponse(reasoning=("think", "ing"), content=())
+
+
+def reasoning_then_content(request, timeout):
+    del request, timeout
+    return FakeResponse(reasoning=("think", "ing"))
+
+
+check(
+    request_with(reasoning_stream).completion_sha256
+    == serving_bench.hashlib.sha256(b"thinking\0").hexdigest(),
+    "reasoning-only output hashes the reasoning, not empty content",
+)
+check(
+    request_with(reasoning_then_content).completion_sha256
+    == serving_bench.hashlib.sha256(b"thinking\0one two").hexdigest(),
+    "reasoning and content hash together, separated by NUL",
+)
+check(
+    serving_bench.completion_digest("one two")
+    == serving_bench.hashlib.sha256(b"one two").hexdigest(),
+    "content-only digests keep the plain content hash",
+)
 
 
 def overridden_benchmark(request, timeout):
@@ -978,6 +1017,41 @@ with tempfile.TemporaryDirectory() as directory:
     check(session.store.call_args.args[1]["mode"] == "mtp",
           "loading records its actual speculative execution mode")
     session.reference_version.assert_called_once_with("mtp")
+
+# Models without a speculative mode omit the section; AR tables and loading still work.
+with tempfile.TemporaryDirectory() as directory:
+    config = load_config(ROOT, "flint")
+    check(config.speculative is None and config.reference_speculative is None,
+          "Flint declares no speculative mode")
+    config.artifacts_override = Path(directory)
+    config.files = {"gguf": {"default": Path(__file__)}}
+    for table in config.tables():
+        check(layout_for(config, table).columns, f"{table.id} renders without a speculative section")
+    session = Session(
+        config, "gufo", gufo_binary=Path("gufo"), reference_binary="llama-server",
+        source={"revision": "a" * 40, "dirty": False}, fingerprint={},
+        log_dir=Path(directory), document="", todo_only=False,
+    )
+    loading = config.table("loading")
+    check("--speculative" not in session.gufo_command(loading, mode=None, context=4096, sessions=1, port=1),
+          "AR-only loading passes no speculative arguments")
+    session.server = MagicMock(return_value=MagicMock(ready_seconds=0.25))
+    session.store = MagicMock()
+    with patch("gufo.model_bench.llm.drop_file_cache"), \
+            patch("gufo.model_bench.llm.wait_process_exit"), \
+            patch("sys.stdout", new=io.StringIO()):
+        run_loading(session, loading)
+    check(session.server.call_args.kwargs["mode"] is None, "AR-only loading launches the AR server")
+
+    spec_tables = Path(directory) / "bench.json"
+    data = json.loads((ROOT / "docs/models/flint/artifacts/bench.json").read_text())
+    data["tables"]["multi-mtp"] = {**data["tables"]["multi-ar"], "modes": ["mtp"]}
+    spec_tables.write_text(json.dumps(data))
+    try:
+        load_config(ROOT, "flint", spec_tables)
+        check(False, "speculative tables without a speculative section are rejected")
+    except SystemExit as error:
+        check("multi-mtp" in str(error), "the rejection names the speculative table")
 
 # Single-user d0 and concurrency C1 must send the same pp2048 prompt.
 with tempfile.TemporaryDirectory() as directory:
