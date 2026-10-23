@@ -92,7 +92,8 @@ Weights stay resident on the GPU (23.33 GiB of tensors for UD-Q4_K_XL,
 39.40 GiB for Q8_0, plus scratch).
 Each session holds FP16 K/V: 14 full layers × context × 2 KiB plus
 35 sliding layers × min(context, 2575) × 2 KiB, about 0.3 GB at 4K,
-1.1 GB at 32K and 7.7 GB at 262K. Admission reserves the configured capacity
+1.1 GB at 32K and 7.7 GB at 262K, plus a 36.7 MB copy of the sliding window
+taken when decoding starts. Admission reserves the configured capacity
 for every session before creating it. With one session at capacity 133,121,
 peak device-global memory in use during the benchmark workloads is
 31.12 GiB, of which 3.01 GiB was already in use before the server started:

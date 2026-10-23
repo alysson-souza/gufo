@@ -103,13 +103,20 @@ Measured with the real model in `flint_session_test` and the operator tests:
   mid-generation) restore bit-identical frontier logits; payload size equals
   `PayloadBytes()`; restore rejects foreign artifacts and versions.
 - A cancelled prefill leaves position and logits unchanged and replays exactly.
-- A turn that extends generated tokens, live or from a snapshot, equals a
-  cold prefill of the whole conversation. Decode and prefill kernels round
-  differently, so the engine evaluates every 512 decoded tokens again through
-  prefill, and the remainder when the prefix is next extended; snapshots carry
-  that remainder. Before this, Q8_0 chose a different token at step 7 of a
-  continued chat. tg1024 on Q8_0 costs 3.8% (57.4 → 55.2 tok/s); tg128 is
-  unchanged.
+- A cache hit is bit-identical to a cold run: after any Sync, K/V and logits
+  depend only on the token sequence. Decode and prefill kernels round
+  differently, so a Sync that extends generated tokens first evaluates them
+  again through prefill from the last prefill-written position, restoring the
+  sliding-window rows before it from a per-session anchor (36.7 MB) copied
+  when decoding starts. Generation stays pure decode (tg1024 unchanged:
+  Q8_0 59.4 tok/s, C4 52.4 per session); the extending turn prefills about one
+  extra token per generated token. Checked bitwise on logits for 1, 511, 513,
+  2,100 and 2,700 generated tokens (past the 2,575-slot ring), live,
+  restored, after a cancelled re-prefill and after batched decode beside a
+  different session; and through the server, where a reasoning-free
+  follow-up to a 2,700-token reply reuses the previous prompt and matches a
+  cold run. Before this, Q8_0 chose a different token at step 7 of a
+  continued chat.
 
 These are consistency checks within one build and configuration, not
 independent accuracy evidence.
