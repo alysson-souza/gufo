@@ -201,7 +201,7 @@ about 1 s per token for short prompts and 0.24 s per token in 512-token chunks.
 
 ## Benchmark method
 
-October 23, 2026, 16:39–16:55 UTC. Host: Ryzen AI MAX+ 395 / Radeon 8060S
+October 23, 2026, 18:47–19:10 UTC. Host: Ryzen AI MAX+ 395 / Radeon 8060S
 (gfx1151), 128 GB, Linux 7.3.0. Both sides are Nix builds (ROCm 7.2.3, AMD
 clang 22, GCC 15.3.0):
 
@@ -210,22 +210,34 @@ clang 22, GCC 15.3.0):
   (build 11827), the repository's ROCm recipe for the other llama.cpp pins.
 
 power-profiles-daemon `performance` (amd_pstate; no ACPI platform profile).
-Tctl 42 → 51 °C, GPU edge 38 → 42 °C over the run. Nothing else ran on the
-GPU. Order: Gufo single-ar and memory, multi-ar (three cohorts per point),
-cold loading; then llama.cpp the same. Other rows: one warmed sample.
+Tctl 46 → 54 °C, GPU edge 34 → 42 °C. GPU busy 0% before, between and after
+the runs, with no other process above 1.3% of the graphics engine. Order:
+Gufo single-ar, multi-ar (three cohorts per point); llama.cpp the same; the
+unpinned llama.cpp control; then memory and cold loading on each. Other rows:
+one warmed sample.
 
-An earlier card from host-compiler builds (GCC 15.3 with AMD clang 24, and an
-unpinned llama.cpp `970b51ce` build), measured earlier that day before a
-kernel update, was 2–7% faster on both engines. Paired controls after the
-update put the cause on the host, not the toolchain: native `gufo bench` and
-`llama-bench` from the two toolchains agree within ±0.6% on decode (−1.8% for
-Q4 at C8) and differ by 1–2.7% on prefill, and the host-compiler Gufo
-through this HTTP driver gave 2192 pp / 65.7 tg at depth 0 and 257.3 tok/s at
-C8 against the Nix build's 2211 / 65.5 / 252.9. Generated tokens are
-identical across toolchains: every timed Gufo completion hashes the same as
-before (`dede3fc3…`). The Nix llama.cpp build is much faster than the
-unpinned one at depth (pp at 131,072: 406 vs 320 tok/s), which narrows Gufo's
-deep-context prefill lead.
+Background GPU work matters at this scale. A terminal window redrawing
+continuous output used about 25% of the graphics engine and lowered an
+otherwise identical run by 2–7% on both engines (Gufo d0 2211 pp / 65.5 tg,
+C8 252.9 tok/s). Keep the desktop idle and check `gpu_busy_percent` and DRM
+fdinfo before trusting a sweep.
+
+Earlier card from host-compiler builds (GCC 15.3 with AMD clang 24, and an
+unpinned ROCm build of llama.cpp `970b51ce`), measured overnight on an idle
+desktop: Gufo d0 2372.9 pp / 67.65 tg, C8 270.9 tok/s. The same unpinned
+llama.cpp binary, re-run in this session, reproduces its earlier numbers
+(depth 0 / 64K / 128K pp 1659 / 566 / 317 against 1666 / 568 / 320 tok/s;
+tg within 0.6%), so that card was not disturbed. The differences come from
+the builds:
+
+- Gufo under Nix is about 2.6% slower in prefill and 1% slower in decode
+  (paired native `gufo bench`: −1 to −2.7% prefill, ±0.6% decode except −1.8%
+  for Q4 at 8 users). The Nix clang gives Flint's vendored matrix kernels more
+  register spills, the likely prefill cost. Generated tokens are identical:
+  every timed Gufo completion hashes `dede3fc3…` with either toolchain.
+- The Nix llama.cpp build is much faster at long context than the unpinned
+  one (pp at 131,072: 422 vs 317 tok/s), which narrows Gufo's deep-context
+  prefill lead from +45% to +10%.
 
 Driver: `tools/bench/model-bench.py` with
 [bench.json](artifacts/bench.json), which has no `speculative` section.
@@ -241,7 +253,7 @@ prompt and generate 128 tokens.
 Both servers return all 128 tokens as `reasoning_content`. Completion hashes
 cover reasoning, NUL and content; all 63 Gufo concurrency completions match
 its C1 output, which equals Gufo's single-user depth-0 completion.
-llama.cpp's own C2–C8 greedy outputs vary across slots and cohorts (2–19
+llama.cpp's own C2–C8 greedy outputs vary across slots and cohorts (3–22
 distinct hashes per point), and its depth-0 and prepared C1 completions
 differ; cross-engine agreement is not a gate.
 

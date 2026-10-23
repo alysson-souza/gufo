@@ -36,7 +36,7 @@
   "referenceName": "llama.cpp",
   "rows": {
     "0": {
-      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 39717 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 34373 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
       "counts": [
         {
           "cache_n": 0,
@@ -47,15 +47,15 @@
           "prompt_n": 2045
         }
       ],
-      "pp": 1561.41,
+      "pp": 1633.17,
       "pp_sd": null,
       "samples": 1,
-      "tg": 51.58,
+      "tg": 53.35,
       "tg_sd": null,
       "workload": "prose"
     },
     "12288": {
-      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 39717 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 34373 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
       "counts": [
         {
           "cache_n": 12242,
@@ -66,15 +66,15 @@
           "prompt_n": 2050
         }
       ],
-      "pp": 1194.55,
+      "pp": 1246.08,
       "pp_sd": null,
       "samples": 1,
-      "tg": 47.15,
+      "tg": 48.55,
       "tg_sd": null,
       "workload": "prose"
     },
     "131072": {
-      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 39717 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 34373 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
       "counts": [
         {
           "cache_n": 130905,
@@ -85,15 +85,15 @@
           "prompt_n": 2052
         }
       ],
-      "pp": 406.37,
+      "pp": 422.41,
       "pp_sd": null,
       "samples": 1,
-      "tg": 26.82,
+      "tg": 27.7,
       "tg_sd": null,
       "workload": "prose"
     },
     "16384": {
-      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 39717 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 34373 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
       "counts": [
         {
           "cache_n": 16345,
@@ -104,15 +104,15 @@
           "prompt_n": 2039
         }
       ],
-      "pp": 1111.24,
+      "pp": 1159.57,
       "pp_sd": null,
       "samples": 1,
-      "tg": 46.05,
+      "tg": 47.41,
       "tg_sd": null,
       "workload": "prose"
     },
     "32768": {
-      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 39717 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 34373 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
       "counts": [
         {
           "cache_n": 32747,
@@ -123,15 +123,15 @@
           "prompt_n": 2033
         }
       ],
-      "pp": 901.34,
+      "pp": 934.12,
       "pp_sd": null,
       "samples": 1,
-      "tg": 41.7,
+      "tg": 43.06,
       "tg_sd": null,
       "workload": "prose"
     },
     "4096": {
-      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 39717 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 34373 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
       "counts": [
         {
           "cache_n": 4094,
@@ -142,15 +142,15 @@
           "prompt_n": 2040
         }
       ],
-      "pp": 1372.28,
+      "pp": 1447.11,
       "pp_sd": null,
       "samples": 1,
-      "tg": 49.86,
+      "tg": 51.4,
       "tg_sd": null,
       "workload": "prose"
     },
     "65536": {
-      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 39717 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 34373 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
       "counts": [
         {
           "cache_n": 65459,
@@ -161,15 +161,15 @@
           "prompt_n": 2054
         }
       ],
-      "pp": 641.14,
+      "pp": 662.17,
       "pp_sd": null,
       "samples": 1,
-      "tg": 35.05,
+      "tg": 36.19,
       "tg_sd": null,
       "workload": "prose"
     },
     "8192": {
-      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 39717 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 34373 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
       "counts": [
         {
           "cache_n": 8176,
@@ -180,10 +180,10 @@
           "prompt_n": 2032
         }
       ],
-      "pp": 1270.89,
+      "pp": 1336.09,
       "pp_sd": null,
       "samples": 1,
-      "tg": 48.46,
+      "tg": 49.87,
       "tg_sd": null,
       "workload": "prose"
     }
@@ -199,7 +199,7 @@
       "-np",
       "1",
       "--port",
-      "39717",
+      "34373",
       "--host",
       "127.0.0.1",
       "--alias",
@@ -219,8 +219,8 @@
   },
   "source": {
     "buildMode": "nix-release",
-    "dirty": true,
-    "revision": "526736b2b29942a35ec621dc4b52d0e484fcee5b"
+    "dirty": false,
+    "revision": "688b037b2bbeb133c8598f59437b9f42bc42db15"
   },
   "table": "single-ar",
   "target": "reference"

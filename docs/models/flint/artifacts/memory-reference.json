@@ -36,13 +36,13 @@
   "referenceName": "llama.cpp",
   "rows": {
     "16K prefix, pp4096 + tg128": {
-      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133121 -np 1 --port 48939 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
-      "gib": 30.74,
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133121 -np 1 --port 39721 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "gib": 30.77,
       "idle_gib": 3.01
     },
     "pp2048 + tg128": {
-      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133121 -np 1 --port 48939 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
-      "gib": 30.74,
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133121 -np 1 --port 39721 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "gib": 30.77,
       "idle_gib": 3.01
     }
   },
@@ -57,7 +57,7 @@
       "-np",
       "1",
       "--port",
-      "48939",
+      "39721",
       "--host",
       "127.0.0.1",
       "--alias",
@@ -77,8 +77,8 @@
   },
   "source": {
     "buildMode": "nix-release",
-    "dirty": true,
-    "revision": "526736b2b29942a35ec621dc4b52d0e484fcee5b"
+    "dirty": false,
+    "revision": "688b037b2bbeb133c8598f59437b9f42bc42db15"
   },
   "table": "memory",
   "target": "reference"

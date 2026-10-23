@@ -56,10 +56,10 @@ Gufo. `--mmproj` and `--enable-yarn` are rejected. `serve` accepts
 `-d` depths (prefix restored from a snapshot) and C1–C8 with `-c`.
 
 Q8_0 needs no other option. Native `gufo bench` / `llama-bench -fa 1` on the
-same file, Nix builds of both (`.#llama-cpp-flint-reference`), mean of two runs
-(not the HTTP card in [Benchmarks](BENCHMARKS.md)): pp2048 2315 vs 1330 tok/s,
-tg128 58.6 vs 47.8, pp2048 at depth 16,384 1594 vs 1022, tg128 at depth
-16,384 50.2 vs 42.5.
+same file, Nix builds of both (`.#llama-cpp-flint-reference`), idle desktop,
+mean of two runs (not the HTTP card in [Benchmarks](BENCHMARKS.md)): pp2048
+2413 vs 1401 tok/s, tg128 60.2 vs 49.1, pp2048 at depth 16,384 1649 vs 1062,
+tg128 at depth 16,384 51.5 vs 43.6.
 
 ## Reasoning, tools and sampling
 

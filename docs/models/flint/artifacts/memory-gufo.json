@@ -35,12 +35,12 @@
   "referenceName": "llama.cpp",
   "rows": {
     "16K prefix, pp4096 + tg128": {
-      "command": "gufo serve --port 43305 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133121 --served-model-name bench --think off --max-pending-per-client 8",
+      "command": "gufo serve --port 42357 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133121 --served-model-name bench --think off --max-pending-per-client 8",
       "gib": 31.15,
       "idle_gib": 3.01
     },
     "pp2048 + tg128": {
-      "command": "gufo serve --port 43305 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133121 --served-model-name bench --think off --max-pending-per-client 8",
+      "command": "gufo serve --port 42357 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133121 --served-model-name bench --think off --max-pending-per-client 8",
       "gib": 31.15,
       "idle_gib": 3.01
     }
@@ -51,7 +51,7 @@
       "gufo",
       "serve",
       "--port",
-      "43305",
+      "42357",
       "--sessions",
       "1",
       "llm",
@@ -70,7 +70,7 @@
   "source": {
     "buildMode": "nix-release",
     "dirty": false,
-    "revision": "526736b2b29942a35ec621dc4b52d0e484fcee5b"
+    "revision": "688b037b2bbeb133c8598f59437b9f42bc42db15"
   },
   "table": "memory",
   "target": "gufo"

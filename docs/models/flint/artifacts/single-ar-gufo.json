@@ -35,7 +35,7 @@
   "referenceName": "llama.cpp",
   "rows": {
     "0": {
-      "command": "gufo serve --port 52715 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
+      "command": "gufo serve --port 55785 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
       "counts": [
         {
           "cache_n": 0,
@@ -46,15 +46,15 @@
           "prompt_n": 2045
         }
       ],
-      "pp": 2211.31,
+      "pp": 2311.26,
       "pp_sd": null,
       "samples": 1,
-      "tg": 65.46,
+      "tg": 67.01,
       "tg_sd": null,
       "workload": "prose"
     },
     "12288": {
-      "command": "gufo serve --port 52715 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
+      "command": "gufo serve --port 55785 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
       "counts": [
         {
           "cache_n": 12242,
@@ -65,15 +65,15 @@
           "prompt_n": 2050
         }
       ],
-      "pp": 1549.48,
+      "pp": 1603.58,
       "pp_sd": null,
       "samples": 1,
-      "tg": 57.85,
+      "tg": 59.28,
       "tg_sd": null,
       "workload": "prose"
     },
     "131072": {
-      "command": "gufo serve --port 52715 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
+      "command": "gufo serve --port 55785 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
       "counts": [
         {
           "cache_n": 130904,
@@ -84,15 +84,15 @@
           "prompt_n": 2053
         }
       ],
-      "pp": 450.04,
+      "pp": 462.84,
       "pp_sd": null,
       "samples": 1,
-      "tg": 29.79,
+      "tg": 30.74,
       "tg_sd": null,
       "workload": "prose"
     },
     "16384": {
-      "command": "gufo serve --port 52715 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
+      "command": "gufo serve --port 55785 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
       "counts": [
         {
           "cache_n": 16345,
@@ -103,15 +103,15 @@
           "prompt_n": 2039
         }
       ],
-      "pp": 1478.56,
+      "pp": 1537.51,
       "pp_sd": null,
       "samples": 1,
-      "tg": 56.08,
+      "tg": 57.4,
       "tg_sd": null,
       "workload": "prose"
     },
     "32768": {
-      "command": "gufo serve --port 52715 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
+      "command": "gufo serve --port 55785 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
       "counts": [
         {
           "cache_n": 32747,
@@ -122,15 +122,15 @@
           "prompt_n": 2033
         }
       ],
-      "pp": 1133.66,
+      "pp": 1168.18,
       "pp_sd": null,
       "samples": 1,
-      "tg": 49.53,
+      "tg": 50.75,
       "tg_sd": null,
       "workload": "prose"
     },
     "4096": {
-      "command": "gufo serve --port 52715 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
+      "command": "gufo serve --port 55785 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
       "counts": [
         {
           "cache_n": 4094,
@@ -141,15 +141,15 @@
           "prompt_n": 2040
         }
       ],
-      "pp": 1915.5,
+      "pp": 2002.29,
       "pp_sd": null,
       "samples": 1,
-      "tg": 61.92,
+      "tg": 63.36,
       "tg_sd": null,
       "workload": "prose"
     },
     "65536": {
-      "command": "gufo serve --port 52715 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
+      "command": "gufo serve --port 55785 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
       "counts": [
         {
           "cache_n": 65459,
@@ -160,15 +160,15 @@
           "prompt_n": 2054
         }
       ],
-      "pp": 740.86,
+      "pp": 765.97,
       "pp_sd": null,
       "samples": 1,
-      "tg": 40.37,
+      "tg": 41.44,
       "tg_sd": null,
       "workload": "prose"
     },
     "8192": {
-      "command": "gufo serve --port 52715 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
+      "command": "gufo serve --port 55785 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 133760 --served-model-name bench --think off --max-pending-per-client 8",
       "counts": [
         {
           "cache_n": 8176,
@@ -179,10 +179,10 @@
           "prompt_n": 2032
         }
       ],
-      "pp": 1734.97,
+      "pp": 1809.9,
       "pp_sd": null,
       "samples": 1,
-      "tg": 60.02,
+      "tg": 61.58,
       "tg_sd": null,
       "workload": "prose"
     }
@@ -193,7 +193,7 @@
       "gufo",
       "serve",
       "--port",
-      "52715",
+      "55785",
       "--sessions",
       "1",
       "llm",
@@ -212,7 +212,7 @@
   "source": {
     "buildMode": "nix-release",
     "dirty": false,
-    "revision": "526736b2b29942a35ec621dc4b52d0e484fcee5b"
+    "revision": "688b037b2bbeb133c8598f59437b9f42bc42db15"
   },
   "table": "single-ar",
   "target": "gufo"

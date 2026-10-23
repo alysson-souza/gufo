@@ -25,24 +25,28 @@
   "scope": "Benchmark and qualification evidence for the initial Flint integration.",
   "benchmarks-2026-10-23": {
     "scope": "Complete card: single-ar d0-131072, multi-ar C1/2/4/6/8, cold loading at capacity 262144, both memory rows; Gufo and llama.cpp.",
-    "measurement": "One warmed sample per point (multi-ar: three cohorts), greedy seed 1, HTTP on both sides, fresh server per sweep/concurrency, Nix builds on both sides.",
-    "utc": "2026-10-23T16:39-16:55Z",
+    "measurement": "One warmed sample per point (multi-ar: three cohorts), greedy seed 1, HTTP on both sides, fresh server per sweep/concurrency, Nix builds on both sides, idle desktop.",
+    "utc": "2026-10-23T18:47-19:10Z",
     "conditions": {
       "powerProfile": "performance (power-profiles-daemon, amd_pstate; no ACPI platform profile)",
       "temperatureC": {
         "k10temp:Tctl": [
-          42,
-          51.6
+          45.6,
+          54.0
         ],
         "amdgpu:edge": [
-          38,
+          34,
           42
         ]
       },
-      "otherGpuJobs": false
+      "backgroundGpu": "gpu_busy_percent 0 before, between and after; no other DRM client above 1.3% of the graphics engine"
     },
     "loadingMethod": "POSIX_FADV_DONTNEED on the GGUF before each launch; fincore verified zero resident pages. Runtime libraries may be warm.",
     "quality": "Prompt/cache counts identical across servers (d131072 frontier one token apart). Every timed Gufo completion hashes dede3fc3..., as in the earlier host-compiler card.",
-    "toolchainControl": "Same day after a kernel update: native gufo bench / llama-bench Nix vs host compiler within +-0.6% decode (Q4 C8 -1.8%), -1 to -2.7% prefill; host-compiler Gufo via this HTTP driver d0 2192.07 pp / 65.67 tg, C8 257.34 tok/s."
+    "controls": {
+      "terminalContention": "An identical run beside a terminal using about 25% of the graphics engine was 2-7% slower on both engines (Gufo d0 2211.31 pp / 65.46 tg, C8 252.93).",
+      "unpinnedLlamaCpp": "The unpinned ROCm build of llama.cpp 970b51ce used for the earlier card reproduces it on the idle desktop: d0/64K/128K pp 1659.2/566.33/316.93, tg 53.58/36.25/27.57.",
+      "toolchain": "Paired native gufo bench, Nix vs host compiler: -1 to -2.7% prefill, +-0.6% decode (Q4 C8 -1.8%); completion hashes identical."
+    }
   }
 }
