@@ -11,77 +11,38 @@
     "project": "llama.cpp",
     "revision": "970b51ce7c9ba5fff0726c5e9994f1c2f0e4eedc",
     "flintSupport": "a37cc461, ggml-org/llama.cpp#30928",
-    "build": "ad-hoc ROCm build, not a Nix pin: -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx1151 -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON -DGGML_HIP_NO_VMM=ON -DGGML_HIP_GRAPHS=ON -DGGML_HIP_MMQ_MFMA=ON -DGGML_CUDA_FA=ON -DGGML_NATIVE=ON (GGML_HIP_UMA=ON was passed but is unused at this revision); host GCC 16.2.1, ROCm clang",
-    "version": "llama-server 0.7.0-dev (build 1, commit 970b51c)",
+    "build": "Nix .#llama-cpp-flint-reference (.devops/nix/llama-cpp-reference.nix): nixpkgs llama-cpp with ROCm for gfx1151, LLAMA_HIP_UMA, ROCm 7.2.3, AMD clang 22",
+    "version": "llama-server 0.7.0-dev (build 11827, commit 970b51ce)",
     "binarySha256": {
-      "llama-server": "12220d4fab32e165458c4d7affea576dc50b046f61e4713ae2801825100db942",
-      "libllama.so": "1a2b82c410e9999f19bc9bd4b9d87aa6e140bbe30a93f34a3fc1151c5b715619",
-      "libggml-hip.so": "6e86aa00bd0fa6768b99a9433ba0ba77ac3b7fcb52c284b81774537d2cb745cf"
-    },
-    "why": "The repository's pinned .#llama-cpp-reference (b11069) predates Flint support."
+      "llama-server": "0d995b9eee6480a562ed51330c55565d48bfda9e954eccbed7ce9d620093aaf3"
+    }
   },
   "gufo": {
-    "sourceRevision": "09c6149",
-    "sourceNote": "Built from the feat/flint tree before it was committed as 09c6149; the only later source difference is clang-format whitespace in src/models/flint/config.*.",
-    "build": "cmake --preset release (RelWithDebInfo, production flags) without Nix: GCC 15.3.0 host compiler, ROCm development AMD clang 24.0.0git (HIP 7.17.26416) for HIP; not the pinned Nix clang 22 toolchain",
-    "binarySha256": "8911c533b0b0e7e9df4bf583da8f6536003f95c5656852dd5134b40610717aa4"
+    "sourceRevision": "526736b",
+    "build": "nix build (production package; ROCm 7.2.3, AMD clang 22, GCC 15.3.0)",
+    "binarySha256": "1ffe069c4d10c1747d26614b38130e5aefd8ac8c0cbb5256ebc81471ac0872e0"
   },
   "scope": "Benchmark and qualification evidence for the initial Flint integration.",
   "benchmarks-2026-10-23": {
     "scope": "Complete card: single-ar d0-131072, multi-ar C1/2/4/6/8, cold loading at capacity 262144, both memory rows; Gufo and llama.cpp.",
-    "measurement": "One warmed sample per point, greedy seed 1, HTTP on both sides, fresh server per sweep/concurrency. Artifacts carry source buildMode 'nix-release' because the driver hard-codes it; the actual build is the non-Nix release preset recorded under 'gufo'.",
+    "measurement": "One warmed sample per point (multi-ar: three cohorts), greedy seed 1, HTTP on both sides, fresh server per sweep/concurrency, Nix builds on both sides.",
+    "utc": "2026-10-23T16:39-16:55Z",
     "conditions": {
       "powerProfile": "performance (power-profiles-daemon, amd_pstate; no ACPI platform profile)",
-      "profileVerifiedThroughout": true,
-      "monitorSamples": 114,
-      "start": {
-        "k10temp:Tctl": 40,
-        "amdgpu:edge": 39
-      },
-      "rangeC": {
+      "temperatureC": {
         "k10temp:Tctl": [
-          36,
-          74
+          42,
+          51.6
         ],
         "amdgpu:edge": [
-          35,
-          79
+          38,
+          42
         ]
       },
       "otherGpuJobs": false
     },
-    "loadingMethod": "POSIX_FADV_DONTNEED on the GGUF before each launch; mincore verified zero resident pages. Runtime libraries may be warm.",
-    "quality": "Prompt/cache counts identical across servers (d131072 frontier one token apart). Completion hashes cover reasoning, NUL and content: all 63 Gufo C1-C8 completions match Gufo C1, which equals the Gufo single-user d0 completion.",
-    "concurrencyRefresh": {
-      "utc": "2026-10-23T01:45-01:49Z",
-      "repetitions": 3,
-      "powerProfile": "performance",
-      "temperatureRangeC": {
-        "k10temp:Tctl": [
-          36,
-          53
-        ],
-        "amdgpu:edge": [
-          35,
-          42
-        ]
-      },
-      "reason": "Reasoning-aware completion hashes; first single-cohort rerun differed from the sweep by up to 8% on llama.cpp C2, so three cohorts per point."
-    },
-    "singleUserRefresh": {
-      "utc": "2026-10-23T01:51-02:05Z",
-      "powerProfile": "performance",
-      "temperatureRangeC": {
-        "k10temp:Tctl": [
-          34,
-          55
-        ],
-        "amdgpu:edge": [
-          33,
-          44
-        ]
-      },
-      "reason": "Reasoning-aware completion hashes in every retained artifact."
-    }
+    "loadingMethod": "POSIX_FADV_DONTNEED on the GGUF before each launch; fincore verified zero resident pages. Runtime libraries may be warm.",
+    "quality": "Prompt/cache counts identical across servers (d131072 frontier one token apart). Every timed Gufo completion hashes dede3fc3..., as in the earlier host-compiler card.",
+    "toolchainControl": "Same day after a kernel update: native gufo bench / llama-bench Nix vs host compiler within +-0.6% decode (Q4 C8 -1.8%), -1 to -2.7% prefill; host-compiler Gufo via this HTTP driver d0 2192.07 pp / 65.67 tg, C8 257.34 tok/s."
   }
 }

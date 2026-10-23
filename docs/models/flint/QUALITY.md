@@ -196,26 +196,31 @@ about 1 s per token for short prompts and 0.24 s per token in 512-token chunks.
 
 ## Benchmark method
 
-October 23, 2026, 01:14–01:33 UTC; refreshes 01:45–01:49 (multi-ar) and 01:51–02:05 UTC (single-ar). Host: Ryzen AI MAX+ 395 / Radeon 8060S
-(gfx1151), 128 GB, Linux 7.3.0, ROCm development build (HIP 7.17.26416). Both
-binaries were built without Nix, so neither is the pinned production package:
+October 23, 2026, 16:39–16:55 UTC. Host: Ryzen AI MAX+ 395 / Radeon 8060S
+(gfx1151), 128 GB, Linux 7.3.0. Both sides are Nix builds (ROCm 7.2.3, AMD
+clang 22, GCC 15.3.0):
 
-- Gufo: `cmake --preset release` (production flags, RelWithDebInfo) of commit
-  `09c6149`, GCC 15.3.0 host compiler and ROCm AMD clang 24.0.0git for HIP
-  (Nix pins clang 22). Binary SHA-256 `8911c533…`.
-  The driver labels artifacts `nix-release`; that field is hard-coded.
-- llama.cpp: ad-hoc ROCm build of `970b51ce` (Release, shared libraries,
-  `GGML_HIP=ON`, `AMDGPU_TARGETS=gfx1151`, `GGML_HIP_NO_VMM`, `GGML_HIP_GRAPHS`,
-  `GGML_HIP_MMQ_MFMA`, `GGML_CUDA_FA`, `GGML_NATIVE`), not a Nix pin.
+- Gufo: `nix build` of commit `526736b`, binary SHA-256 `1ffe069c…`.
+- llama.cpp: `.#llama-cpp-flint-reference`, upstream `970b51ce`
+  (build 11827), the repository's ROCm recipe for the other llama.cpp pins.
 
-power-profiles-daemon `performance` (amd_pstate; no ACPI platform profile)
-for each sweep. Starting temperatures
-Tctl 40 °C / GPU edge 39 °C; range 36–74 °C / 35–79 °C over 114 samples
-(refreshes: 34–55 °C / 33–44 °C). Nothing else ran on the GPU.
-Order: Gufo single-ar, multi-ar, memory; llama.cpp the same; then cold
-loading on each. After the driver began hashing reasoning, multi-ar (three
-cohorts per point) and then single-ar were re-run on both servers. Other
-rows: one warmed sample.
+power-profiles-daemon `performance` (amd_pstate; no ACPI platform profile).
+Tctl 42 → 51 °C, GPU edge 38 → 42 °C over the run. Nothing else ran on the
+GPU. Order: Gufo single-ar and memory, multi-ar (three cohorts per point),
+cold loading; then llama.cpp the same. Other rows: one warmed sample.
+
+An earlier card from host-compiler builds (GCC 15.3 with AMD clang 24, and an
+unpinned llama.cpp `970b51ce` build), measured earlier that day before a
+kernel update, was 2–7% faster on both engines. Paired controls after the
+update put the cause on the host, not the toolchain: native `gufo bench` and
+`llama-bench` from the two toolchains agree within ±0.6% on decode (−1.8% for
+Q4 at C8) and differ by 1–2.7% on prefill, and the host-compiler Gufo
+through this HTTP driver gave 2192 pp / 65.7 tg at depth 0 and 257.3 tok/s at
+C8 against the Nix build's 2211 / 65.5 / 252.9. Generated tokens are
+identical across toolchains: every timed Gufo completion hashes the same as
+before (`dede3fc3…`). The Nix llama.cpp build is much faster than the
+unpinned one at depth (pp at 131,072: 406 vs 320 tok/s), which narrows Gufo's
+deep-context prefill lead.
 
 Driver: `tools/bench/model-bench.py` with
 [bench.json](artifacts/bench.json), which has no `speculative` section.
@@ -231,14 +236,15 @@ prompt and generate 128 tokens.
 Both servers return all 128 tokens as `reasoning_content`. Completion hashes
 cover reasoning, NUL and content; all 63 Gufo concurrency completions match
 its C1 output, which equals Gufo's single-user depth-0 completion.
-llama.cpp's own C2–C8 greedy outputs vary across slots and cohorts (4–23
+llama.cpp's own C2–C8 greedy outputs vary across slots and cohorts (2–19
 distinct hashes per point), and its depth-0 and prepared C1 completions
 differ; cross-engine agreement is not a gate.
 
 ```sh
 M=/path/to/flint-UD-Q4_K_XL.gguf
-REF=/path/to/llama.cpp-970b51ce/build/bin/llama-server
-B="python3 tools/bench/model-bench.py --model flint --gufo build/release/gufo --gguf $M"
+nix build && nix build .#llama-cpp-flint-reference --out-link result-llama
+REF=$PWD/result-llama/bin/llama-server-flint
+B="python3 tools/bench/model-bench.py --model flint --gguf default=$M"
 $B run --target gufo --fresh --table single-ar,memory
 $B run --target reference --reference-binary "$REF" --fresh --table single-ar,memory
 $B run --target gufo --fresh --repetitions 3 --table multi-ar

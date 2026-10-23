@@ -13,13 +13,13 @@
       "gpuDriver": "amdgpu",
       "gpuName": "AMD Radeon 8060S Graphics",
       "gpuPciId": "1002:1586",
-      "kernelRelease": "7.3.0-2-cachyos",
-      "memoryTotalBytes": 133618798592,
+      "kernelRelease": "7.3.0-4-cachyos",
+      "memoryTotalBytes": 133618380800,
       "memoryType": "LPDDR5X (Unified)",
       "rocmVersion": "7.2.3",
       "schemaVersion": "1.0.0"
     },
-    "fingerprintId": "80811fcc1505ada0aaa6fcef0938539134fc181fe9543aa1fcc98689a091bc3c",
+    "fingerprintId": "bf7b5a25b8197270e98c8e9fe73b96c5cd8dae7b4378fcb5fecb940546138dc7",
     "schemaVersion": "1.0.0"
   },
   "measuredOn": "2026-10-23",
@@ -29,15 +29,15 @@
     "variant": null
   },
   "notes": [
-    "llama.cpp: llama-server version: 0.7.0-dev (build 1, commit 970b51c)",
+    "llama.cpp: llama-server-flint version: 0.7.0-dev (build 11827, commit 970b51ce)",
     "file cache reset before each launch with the supplied --drop-caches command",
     "readiness = HTTP 200 on /health"
   ],
   "referenceName": "llama.cpp",
   "rows": {
     "default": {
-      "command": "llama-server -m flint-UD-Q4_K_XL.gguf -c 262144 -np 1 --port 33025 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
-      "ready_s": 5.296,
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 262144 -np 1 --port 58049 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "ready_s": 5.24,
       "ready_s_sd": null,
       "samples": 1
     }
@@ -45,7 +45,7 @@
   "schemaVersion": 1,
   "server": {
     "command": [
-      "llama-server",
+      "llama-server-flint",
       "-m",
       "flint-UD-Q4_K_XL.gguf",
       "-c",
@@ -53,7 +53,7 @@
       "-np",
       "1",
       "--port",
-      "33025",
+      "58049",
       "--host",
       "127.0.0.1",
       "--alias",
@@ -74,7 +74,7 @@
   "source": {
     "buildMode": "nix-release",
     "dirty": true,
-    "revision": "1167a94475ad888534a99c9fb72401636cd9f7e7"
+    "revision": "526736b2b29942a35ec621dc4b52d0e484fcee5b"
   },
   "table": "loading",
   "target": "reference"

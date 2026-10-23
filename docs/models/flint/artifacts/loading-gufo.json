@@ -13,17 +13,17 @@
       "gpuDriver": "amdgpu",
       "gpuName": "AMD Radeon 8060S Graphics",
       "gpuPciId": "1002:1586",
-      "kernelRelease": "7.3.0-2-cachyos",
-      "memoryTotalBytes": 133618798592,
+      "kernelRelease": "7.3.0-4-cachyos",
+      "memoryTotalBytes": 133618380800,
       "memoryType": "LPDDR5X (Unified)",
       "rocmVersion": "7.2.3",
       "schemaVersion": "1.0.0"
     },
-    "fingerprintId": "80811fcc1505ada0aaa6fcef0938539134fc181fe9543aa1fcc98689a091bc3c",
+    "fingerprintId": "bf7b5a25b8197270e98c8e9fe73b96c5cd8dae7b4378fcb5fecb940546138dc7",
     "schemaVersion": "1.0.0"
   },
   "measuredOn": "2026-10-23",
-  "mode": "ar",
+  "mode": null,
   "model": {
     "id": "Recursive-Flint",
     "variant": null
@@ -35,8 +35,8 @@
   "referenceName": "llama.cpp",
   "rows": {
     "default": {
-      "command": "gufo serve --port 37089 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 262144 --served-model-name bench --think off --max-pending-per-client 8",
-      "ready_s": 4.108,
+      "command": "gufo serve --port 55441 --sessions 1 llm --model flint-UD-Q4_K_XL.gguf --context 262144 --served-model-name bench --think off --max-pending-per-client 8",
+      "ready_s": 4.257,
       "ready_s_sd": null,
       "samples": 1
     }
@@ -47,7 +47,7 @@
       "gufo",
       "serve",
       "--port",
-      "37089",
+      "55441",
       "--sessions",
       "1",
       "llm",
@@ -66,7 +66,7 @@
   "source": {
     "buildMode": "nix-release",
     "dirty": true,
-    "revision": "1167a94475ad888534a99c9fb72401636cd9f7e7"
+    "revision": "526736b2b29942a35ec621dc4b52d0e484fcee5b"
   },
   "table": "loading",
   "target": "gufo"

@@ -13,13 +13,13 @@
       "gpuDriver": "amdgpu",
       "gpuName": "AMD Radeon 8060S Graphics",
       "gpuPciId": "1002:1586",
-      "kernelRelease": "7.3.0-2-cachyos",
-      "memoryTotalBytes": 133618798592,
+      "kernelRelease": "7.3.0-4-cachyos",
+      "memoryTotalBytes": 133618380800,
       "memoryType": "LPDDR5X (Unified)",
       "rocmVersion": "7.2.3",
       "schemaVersion": "1.0.0"
     },
-    "fingerprintId": "80811fcc1505ada0aaa6fcef0938539134fc181fe9543aa1fcc98689a091bc3c",
+    "fingerprintId": "bf7b5a25b8197270e98c8e9fe73b96c5cd8dae7b4378fcb5fecb940546138dc7",
     "schemaVersion": "1.0.0"
   },
   "measuredOn": "2026-10-23",
@@ -29,109 +29,109 @@
     "variant": null
   },
   "notes": [
-    "llama.cpp: llama-server version: 0.7.0-dev (build 1, commit 970b51c)",
+    "llama.cpp: llama-server-flint version: 0.7.0-dev (build 11827, commit 970b51ce)",
     "pp2048/tg128; depth is a cached conversation prefix of synthetic text (8-token reply); measured turn task is recorded per row; tolerance max(32, 0.500%) on cache_n and prompt_n; actual counts per sample in rows",
     "synthetic text: 1.121 tokens/word, template overhead 2 tokens"
   ],
   "referenceName": "llama.cpp",
   "rows": {
     "0": {
-      "command": "llama-server -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 38205 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 39717 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
       "counts": [
         {
           "cache_n": 0,
-          "completion_sha256": "37d6190ebe6640594cfa773c3c38edc0409b325a0f2ba838c0ac169f1869fb8b",
+          "completion_sha256": "edf6390ca77fd32e396d5759db0c25f087872dcfddd744052447f08033a3ad65",
           "draft_n": 0,
           "draft_n_accepted": 0,
           "predicted_n": 128,
           "prompt_n": 2045
         }
       ],
-      "pp": 1665.81,
+      "pp": 1561.41,
       "pp_sd": null,
       "samples": 1,
-      "tg": 53.77,
+      "tg": 51.58,
       "tg_sd": null,
       "workload": "prose"
     },
     "12288": {
-      "command": "llama-server -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 38205 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 39717 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
       "counts": [
         {
           "cache_n": 12242,
-          "completion_sha256": "8b019792ed1a4432f91f25e1259de3dc9ed0ab5a313861b0d8da1bef265d01ee",
+          "completion_sha256": "5ffa8da053dbb43ed6bffb410cf62cbd2c2c911553044fe8d2eaef62db136893",
           "draft_n": 0,
           "draft_n_accepted": 0,
           "predicted_n": 128,
           "prompt_n": 2050
         }
       ],
-      "pp": 1236.89,
+      "pp": 1194.55,
       "pp_sd": null,
       "samples": 1,
-      "tg": 49.01,
+      "tg": 47.15,
       "tg_sd": null,
       "workload": "prose"
     },
     "131072": {
-      "command": "llama-server -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 38205 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 39717 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
       "counts": [
         {
           "cache_n": 130905,
-          "completion_sha256": "b8b844cde63767e08c5be5dabbbfb7d75ee0ea752d74377a2f5c3cdb4946ea8d",
+          "completion_sha256": "16966a7046ec24927737134c22c577ad87a3e563db168bb932eb8c95e1fae524",
           "draft_n": 0,
           "draft_n_accepted": 0,
           "predicted_n": 128,
           "prompt_n": 2052
         }
       ],
-      "pp": 319.65,
+      "pp": 406.37,
       "pp_sd": null,
       "samples": 1,
-      "tg": 27.77,
+      "tg": 26.82,
       "tg_sd": null,
       "workload": "prose"
     },
     "16384": {
-      "command": "llama-server -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 38205 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 39717 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
       "counts": [
         {
           "cache_n": 16345,
-          "completion_sha256": "37e5fd60fbf688d669c16a1086593643444a2b9e7a2b17790901532bca18df89",
+          "completion_sha256": "bc62f1428b93cd750a111cb9b9140fa0aa5fb33f89f96262052f1756ab037aa8",
           "draft_n": 0,
           "draft_n_accepted": 0,
           "predicted_n": 128,
           "prompt_n": 2039
         }
       ],
-      "pp": 1132.69,
+      "pp": 1111.24,
       "pp_sd": null,
       "samples": 1,
-      "tg": 47.8,
+      "tg": 46.05,
       "tg_sd": null,
       "workload": "prose"
     },
     "32768": {
-      "command": "llama-server -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 38205 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 39717 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
       "counts": [
         {
           "cache_n": 32747,
-          "completion_sha256": "ca480160460d42e7a677446fbbf668d91af46e2233628b6184e03c5087b23931",
+          "completion_sha256": "d2075bd143210f409c55b8600184a3b40d1268229edc37d731a1cf43e89c86a2",
           "draft_n": 0,
           "draft_n_accepted": 0,
           "predicted_n": 128,
           "prompt_n": 2033
         }
       ],
-      "pp": 851.67,
+      "pp": 901.34,
       "pp_sd": null,
       "samples": 1,
-      "tg": 43.3,
+      "tg": 41.7,
       "tg_sd": null,
       "workload": "prose"
     },
     "4096": {
-      "command": "llama-server -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 38205 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 39717 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
       "counts": [
         {
           "cache_n": 4094,
@@ -142,48 +142,48 @@
           "prompt_n": 2040
         }
       ],
-      "pp": 1439.61,
+      "pp": 1372.28,
       "pp_sd": null,
       "samples": 1,
-      "tg": 51.78,
+      "tg": 49.86,
       "tg_sd": null,
       "workload": "prose"
     },
     "65536": {
-      "command": "llama-server -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 38205 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 39717 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
       "counts": [
         {
           "cache_n": 65459,
-          "completion_sha256": "1b1c00933c0f772e2f5eb61c6bf7fc05a54572ffde29a3b5cdd0b412f5435529",
+          "completion_sha256": "dddb2bb4374c986f30940a9aaf516e530e029084ba5073d127ad8269d3f10130",
           "draft_n": 0,
           "draft_n_accepted": 0,
           "predicted_n": 128,
           "prompt_n": 2054
         }
       ],
-      "pp": 568.27,
+      "pp": 641.14,
       "pp_sd": null,
       "samples": 1,
-      "tg": 36.46,
+      "tg": 35.05,
       "tg_sd": null,
       "workload": "prose"
     },
     "8192": {
-      "command": "llama-server -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 38205 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
+      "command": "llama-server-flint -m flint-UD-Q4_K_XL.gguf -c 133760 -np 1 --port 39717 --host 127.0.0.1 --alias bench -ngl 999 -fa on --cache-reuse 0 --jinja --reasoning off --cache-ram 0",
       "counts": [
         {
           "cache_n": 8176,
-          "completion_sha256": "3becb432713ef052d3464b8a06f6e22f7b3b8faf52ad24bb2d33115c44d9f1b7",
+          "completion_sha256": "22cc543edf3fea11aa045dba11911272e7542dce034e870da007213e274da92f",
           "draft_n": 0,
           "draft_n_accepted": 0,
           "predicted_n": 128,
           "prompt_n": 2032
         }
       ],
-      "pp": 1331.18,
+      "pp": 1270.89,
       "pp_sd": null,
       "samples": 1,
-      "tg": 50.44,
+      "tg": 48.46,
       "tg_sd": null,
       "workload": "prose"
     }
@@ -191,7 +191,7 @@
   "schemaVersion": 1,
   "server": {
     "command": [
-      "llama-server",
+      "llama-server-flint",
       "-m",
       "flint-UD-Q4_K_XL.gguf",
       "-c",
@@ -199,7 +199,7 @@
       "-np",
       "1",
       "--port",
-      "38205",
+      "39717",
       "--host",
       "127.0.0.1",
       "--alias",
@@ -220,7 +220,7 @@
   "source": {
     "buildMode": "nix-release",
     "dirty": true,
-    "revision": "1167a94475ad888534a99c9fb72401636cd9f7e7"
+    "revision": "526736b2b29942a35ec621dc4b52d0e484fcee5b"
   },
   "table": "single-ar",
   "target": "reference"
