@@ -236,39 +236,94 @@ void CheckSnapshots(const std::shared_ptr<flint::Model>& model) {
   std::cout << "snapshots: RAM and serialized restore exact\n" << std::flush;
 }
 
-// A follow-up turn extends a prefix whose last rows were written by decode,
-// live or restored from a snapshot. Decode and prefill kernels round
-// differently, so the engine evaluates decoded rows again through prefill;
-// the extension must equal a cold prefill of the whole conversation. 700
-// decoded tokens cross one periodic re-prefill and leave a pending tail.
+// A follow-up turn extends a prefix whose last rows were written by decode.
+// Decode and prefill kernels round differently, so the engine evaluates the
+// decoded tokens again through prefill from the last prefill-written
+// position; the extension must equal a cold prefill of the whole
+// conversation bit for bit. Generated lengths straddle the window (512),
+// the ring's spare slots (about 2063) and the whole ring (about 2575);
+// prefixes resume live, from serialized snapshots, after a cancelled
+// re-prefill and after batched decode beside a different session.
 void CheckDecodedRows(const std::shared_ptr<flint::Model>& model) {
   std::string error;
-  const auto conversation = LongPrompt(*model, 1020);
-  const auto turn = std::span(conversation).first(1000);
-  auto cold = NewSession(model);
-  Prefill(*cold, conversation);
+  constexpr std::size_t kPrompt = 600;
+  constexpr std::size_t kFollowUp = 20;
+  const auto source = LongPrompt(*model, kPrompt + 2700 + kFollowUp + 37);
+  const auto cold_logits = [&](std::span<const std::uint32_t> conversation) {
+    auto cold = NewSession(model);
+    Prefill(*cold, conversation);
+    return std::vector<float>(cold->Logits().begin(), cold->Logits().end());
+  };
+  const auto decode = [&](flint::Session& session,
+                          std::span<const std::uint32_t> tokens) {
+    for (const auto token : tokens)
+      Require(session.Evaluate(token, &error), "Evaluate: " + error);
+  };
 
-  auto live = NewSession(model);
-  Prefill(*live, turn.first(300));
-  for (const auto token : turn.subspan(300))
-    Require(live->Evaluate(token, &error), "Evaluate: " + error);
-  auto snapshot = live->SaveSnapshot(&error);
-  Require(snapshot != nullptr, "SaveSnapshot: " + error);
-  Require(snapshot->SizeBytes() == live->PayloadBytes(),
-          "decoded-row snapshot size differs from the session's report");
+  for (const std::size_t generated :
+       {std::size_t{1}, std::size_t{511}, std::size_t{513}, std::size_t{2100},
+        std::size_t{2700}}) {
+    const auto conversation =
+        std::span(source).first(kPrompt + generated + kFollowUp);
+    const auto turn = conversation.first(kPrompt + generated);
+    const auto expected = cold_logits(conversation);
+    const std::string label = " (generated=" + std::to_string(generated) + ")";
 
-  auto restored = NewSession(model);
-  Require(restored->RestoreSnapshot(snapshot->bytes(), &error),
-          "restore: " + error);
-  for (flint::Session* session : {live.get(), restored.get()}) {
-    Prefill(*session, conversation);
-    RequireExact(cold->Logits(), session->Logits(),
-                 session == live.get()
-                     ? "extending decoded rows differs from cold prefill"
-                     : "extending restored decoded rows differs from cold "
-                       "prefill");
+    auto live = NewSession(model);
+    Prefill(*live, turn.first(kPrompt));
+    decode(*live, turn.subspan(kPrompt));
+    auto snapshot = live->SaveSnapshot(&error);
+    Require(snapshot != nullptr, "SaveSnapshot: " + error);
+    Require(snapshot->SizeBytes() == live->PayloadBytes(),
+            "decoded-row snapshot size differs from the session's report");
+    Prefill(*live, conversation);
+    RequireExact(
+        expected, live->Logits(),
+        "extending live decoded rows differs from cold prefill" + label);
+
+    auto restored = NewSession(model);
+    Require(restored->RestoreSnapshot(snapshot->bytes(), &error),
+            "restore: " + error);
+    if (generated == 2700) {
+      // Cancel inside the second re-prefill chunk; the retry must resume.
+      int polls = 0;
+      restored->SetCancellationCheck([&polls] { return ++polls > 60; });
+      Require(!restored->Sync(conversation, &error),
+              "a cancelled re-prefill reported success");
+      Require(restored->Position() == turn.size(),
+              "a cancelled re-prefill moved the position");
+      restored->SetCancellationCheck({});
+    }
+    Prefill(*restored, conversation);
+    RequireExact(
+        expected, restored->Logits(),
+        "extending restored decoded rows differs from cold prefill" + label);
   }
-  std::cout << "decoded rows: live and restored extensions equal cold prefill\n"
+
+  // Batched decode beside a session with different content and position.
+  constexpr std::size_t kGenerated = 600;
+  const auto first = std::span(source).first(kPrompt + kGenerated + kFollowUp);
+  const auto second =
+      std::span(source).subspan(37, 900 + kGenerated + kFollowUp);
+  auto a = NewSession(model);
+  auto b = NewSession(model);
+  Prefill(*a, first.first(kPrompt));
+  Prefill(*b, second.first(900));
+  for (std::size_t i = 0; i < kGenerated; ++i) {
+    const std::array items{
+        flint::SessionBatchItem{.session = a.get(),
+                                .token = first[kPrompt + i]},
+        flint::SessionBatchItem{.session = b.get(), .token = second[900 + i]}};
+    Require(model->EvaluateBatch(items, &error), "EvaluateBatch: " + error);
+  }
+  Prefill(*a, first);
+  Prefill(*b, second);
+  RequireExact(cold_logits(first), a->Logits(),
+               "extending batched decoded rows differs from cold prefill");
+  RequireExact(cold_logits(second), b->Logits(),
+               "extending batched decoded rows differs from cold prefill");
+  std::cout << "decoded rows: live, restored, cancelled and batched "
+               "extensions equal cold prefill\n"
             << std::flush;
 }
 
@@ -336,6 +391,36 @@ void CheckBatchedDecode(const std::shared_ptr<flint::Model>& model) {
 std::vector<ChatMessage> Chat(std::string_view user) {
   return {{ChatRole::kSystem, "Answer in one short sentence."},
           {ChatRole::kUser, std::string(user)}};
+}
+
+// Clients usually send the previous reply back without its reasoning, so the
+// next turn shares only the previous prompt. After a reply longer than the
+// sliding ring (about 2575 positions) the live session can no longer rewind
+// there; the turn must still reuse that prompt and match a cold run.
+void CheckLongTurn(const std::shared_ptr<flint::Model>& model) {
+  server::InferenceBackend backend;
+  std::string error;
+  Require(backend.load(model, &error, kContext, 2), error);
+  const auto messages = Chat(
+      "Write every integer from 1 to 1500 in English words, separated by "
+      "commas.");
+  const auto first = backend.chat(messages, 2700, sampling::SamplingConfig{});
+  Require(first.tokens.size() == 2700, "long-turn fixture stopped after " +
+                                           std::to_string(first.tokens.size()) +
+                                           " tokens");
+  auto history = messages;
+  history.emplace_back(ChatRole::kAssistant, "");
+  history.emplace_back(ChatRole::kUser, "Now write only the number 7.");
+  const auto direct = Direct(model, model->EncodeChat(history, {}), 8);
+  const auto next = backend.chat(history, 8, sampling::SamplingConfig{});
+  Require(next.cache_hit && next.cached_prompt_tokens == first.prompt_tokens,
+          "turn after a long reply reused " +
+              std::to_string(next.cached_prompt_tokens) + " tokens, not the " +
+              std::to_string(first.prompt_tokens) + "-token prompt");
+  RequireTokens(direct, next.tokens,
+                "turn after a long reply differs from cold prefill");
+  std::cout << "long turn: reasoning-free follow-up reuses the prompt exactly\n"
+            << std::flush;
 }
 
 void CheckServing(const std::shared_ptr<flint::Model>& model) {
@@ -612,6 +697,7 @@ int main(int argc, char** argv) {
     }
     if (only.empty() || only == "--serving-only") {
       CheckServing(model);
+      CheckLongTurn(model);
       CheckEndOfGeneration(model);
       CheckReasoningControls(model);
       CheckDiskCache(model);

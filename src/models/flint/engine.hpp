@@ -98,15 +98,17 @@ public:
   /// Extends the held prefix to `prompt`: `prompt` must start with the
   /// Position() tokens already evaluated and add at most PrefillCapacity()
   /// new ones. Leaves the frontier logits of the last token ready. A
-  /// cancelled call returns false with the position unchanged.
+  /// cancelled call returns false with the position and logits unchanged;
+  /// the next call on the session must then be Sync, RestoreSnapshot or
+  /// Invalidate.
   ///
-  /// Rows that Evaluate wrote are first evaluated again through prefill, so
-  /// the extended prefix holds exactly what a cold Sync of `prompt` would.
+  /// Rows Evaluate wrote are first evaluated again through prefill, so the
+  /// extended prefix holds exactly what a cold Sync of `prompt` would. That
+  /// work, about one prefilled token per decoded token, comes on top of the
+  /// new tokens.
   [[nodiscard]] bool Sync(std::span<const std::uint32_t> prompt,
                           std::string* error_msg = nullptr);
-  /// Evaluates one token after the held prefix. Every 512 evaluated tokens
-  /// are evaluated again through prefill, which also replaces the frontier
-  /// logits; Sync handles the rest when the prefix is extended.
+  /// Evaluates one token after the held prefix through the decode kernels.
   [[nodiscard]] bool Evaluate(std::uint32_t token,
                               std::string* error_msg = nullptr);
   /// Host copy of the frontier logits (VocabSize() floats).
@@ -144,14 +146,14 @@ private:
 };
 
 /// Host copy of a session prefix: position, logits and the KV rows it needs
-/// (every full-attention row, the sliding-window rows the next position and
-/// any pending re-prefill read), plus the token ids of decode-written rows
-/// not yet evaluated again. The byte layout is versioned and self-describing
-/// so it can be persisted.
+/// (every full-attention row, the last window of sliding-window rows). A
+/// prefix that ends in decoded tokens also carries their token ids and the
+/// window before them, so a later Sync can evaluate them again exactly. The
+/// byte layout is versioned and self-describing so it can be persisted.
 class SessionSnapshot final {
 public:
   /// Version of the serialized layout; any layout change increments it.
-  static constexpr std::uint32_t kPayloadVersion = 2;
+  static constexpr std::uint32_t kPayloadVersion = 3;
 
   ~SessionSnapshot();
 
