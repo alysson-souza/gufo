@@ -19,6 +19,11 @@ outside every comparison below.
 
 Evidence: [logit comparison summaries](artifacts/quality-logits.json).
 
+The logit comparisons were made with host-compiler builds (GCC 15.3, AMD
+clang 24). Re-run with the Nix toolchain (AMD clang 22, ROCm 7.2.3), the
+prefill and decode probes give the same KL, top-1/top-5 and non-finite counts
+to four digits on both quantizations' code and long prompts.
+
 ## Independent references
 
 Teacher: Gufo's scalar CPU reference (`gufo_flint_reference`), written from
